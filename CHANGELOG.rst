@@ -2,6 +2,6 @@
 Changelog for ros2_snapshot
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-0.0.1 (2026-01-27)
+0.0.1 (2026-01-29)
 ------------------
-* Initial release
+* Original release
