@@ -1,0 +1,10 @@
+output/*
+*.pyc
+.idea
+docs/*
+.vscode
+yaml_output/*
+.vscode
+build
+install
+log
