@@ -83,7 +83,7 @@ Again inspect the data bank files in the default `~/.snapshot_modeling` folder.
 
 This project is an ongoing development effort and may be subject to future changes.
 
-This package has been tested under ROS Jazzy and Kilted running Ubuntu 24.04
+This package has been tested under ROS Jazzy, Kilted, and Rolling running Ubuntu 24.04
 
 See the individual module READMEs for additional information.
 
