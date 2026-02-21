@@ -11,7 +11,7 @@
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>ros2pkg</exec_depend>
   <exec_depend>graphviz</exec_depend>
-  <exec_depend>pydantic</exec_depend>
+  <exec_depend>python3-pydantic</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
