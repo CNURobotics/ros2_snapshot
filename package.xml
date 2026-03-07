@@ -8,8 +8,10 @@
   <author email="andrew.farney.22@cnu.edu">Andrew Farney</author>
   <license>Apache 2.0</license>
 
-  <exec_depend>ros2pkg</exec_depend>
   <exec_depend>graphviz</exec_depend>
+  <exec_depend>ros2pkg</exec_depend>
+  <exec_depend>python3-apt</exec_depend>
+  <exec_depend>python3-graphviz</exec_depend>
   <exec_depend>python3-pydantic</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
