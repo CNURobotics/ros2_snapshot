@@ -2,6 +2,10 @@
 Changelog for ros2_snapshot
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+------------------
+* update dependencies for buildfarm
+
 0.0.3 (2026-02-21)
 ------------------
 * Use rclpy.endpoint_info instead of rclpy.topic_endpoint_info in rolling

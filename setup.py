@@ -60,6 +60,8 @@ setup(
         "setuptools",
         "graphviz",
         "pydantic",
+        "psutil",
+        "PyYAML",
     ],
     zip_safe=True,
     author="CNU Robotics CHRISLab",
