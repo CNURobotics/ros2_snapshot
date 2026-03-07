@@ -2,7 +2,7 @@
 Changelog for ros2_snapshot
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
+0.0.4 (2026-03-06)
 ------------------
 * update dependencies for buildfarm
 
