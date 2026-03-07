@@ -12,22 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import shutil
+
 
 def test_import_ros2_snapshot_core():
-    import core  # noqa: F401
+    import core
+    assert core is not None
 
 
-def test_import_ros2_snapshot_snapshot():
-    import snapshot  # noqa: F401
+def test_import_ros2_snapshot_snapshot_pkg():
+    import snapshot
+    assert snapshot is not None
 
 
-def test_import_ros2_snapshot_workspace():
-    import workspace_modeler  # noqa: F401
+def test_import_ros2_snapshot_workspace_pkg():
+    import workspace_modeler
+    assert workspace_modeler is not None
 
 
 def test_snapshot_entrypoint_import():
-    from snapshot.snapshot import main  # noqa: F401
+    from snapshot.snapshot import main
+    assert callable(main)
 
 
 def test_workspace_entrypoint_import():
-    from workspace_modeler.workspace_modeler import main  # noqa: F401
+    from workspace_modeler.workspace_modeler import main
+    assert callable(main)
+
+
+def test_graphviz_python_dependency():
+    from graphviz import Digraph
+    assert Digraph is not None
+
+
+def test_graphviz_binary_dependency():
+    assert shutil.which("dot") is not None
