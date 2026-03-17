@@ -16,27 +16,27 @@ import shutil
 
 
 def test_import_ros2_snapshot_core():
-    import core
-    assert core is not None
+    import ros2_snapshot.core
+    assert ros2_snapshot.core is not None
 
 
 def test_import_ros2_snapshot_snapshot_pkg():
-    import snapshot
-    assert snapshot is not None
+    import ros2_snapshot.snapshot
+    assert ros2_snapshot.snapshot is not None
 
 
 def test_import_ros2_snapshot_workspace_pkg():
-    import workspace_modeler
-    assert workspace_modeler is not None
+    import ros2_snapshot.workspace_modeler
+    assert ros2_snapshot.workspace_modeler is not None
 
 
 def test_snapshot_entrypoint_import():
-    from snapshot.snapshot import main
+    from ros2_snapshot.snapshot.snapshot import main
     assert callable(main)
 
 
 def test_workspace_entrypoint_import():
-    from workspace_modeler.workspace_modeler import main
+    from ros2_snapshot.workspace_modeler.workspace_modeler import main
     assert callable(main)
 
 

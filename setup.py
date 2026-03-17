@@ -79,8 +79,8 @@ setup(
     license="Apache 2.0",
     entry_points={
         "console_scripts": [
-            "running = snapshot.snapshot:main",
-            "workspace = workspace_modeler.workspace_modeler:main",
+            "running = ros2_snapshot.snapshot.snapshot:main",
+            "workspace = ros2_snapshot.workspace_modeler.workspace_modeler:main",
         ],
     },
     tests_require=["pytest"],
