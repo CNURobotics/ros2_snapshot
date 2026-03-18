@@ -15,7 +15,7 @@
 """Metamodels used to model ROS Message, Action, Service Specifications and the Banks that contain them."""
 
 from enum import Enum, unique
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar, List, Optional, Union
 
 from ros2_snapshot.core.base_metamodel import _BankMetamodel, _EntityMetamodel
 
@@ -35,7 +35,7 @@ class TypeSpecification(_EntityMetamodel):
     yaml_tag: ClassVar[str] = "!TypeSpecification"
 
     construct_type: Optional[str] = None
-    file_path: Optional[str] = None
+    file_path: Optional[Union[str, List[str]]] = None
     package: Optional[str] = None
     spec: Optional[Any] = None
 

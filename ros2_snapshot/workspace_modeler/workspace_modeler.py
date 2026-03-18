@@ -297,7 +297,7 @@ class PackageModeler(object):
         """
         more_node_names = []
         if os.path.islink(full_path):
-            new_path = os.readlink(full_path)
+            new_path = self._resolve_symlink_path(full_path)
 
             more_node_names.extend(
                 self._find_executable_files(child_name, new_path, pkg_name, full_path)
@@ -317,12 +317,24 @@ class PackageModeler(object):
                     # Skip some standard subfolders
                     continue
                 new_path = os.path.join(full_path, child_name)
+                new_link_path = (
+                    os.path.join(link_path, child_name)
+                    if link_path is not None
+                    else None
+                )
                 more_nodes = self._find_executable_files(
-                    child_name, new_path, pkg_name, link_path
+                    child_name, new_path, pkg_name, new_link_path
                 )
                 more_node_names.extend(more_nodes)
 
         return more_node_names
+
+    def _resolve_symlink_path(self, path):
+        """Resolve symlink targets relative to the link's parent directory."""
+        target_path = os.readlink(path)
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(os.path.dirname(path), target_path)
+        return os.path.normpath(target_path)
 
     def _update_node_data(self, pkg_name, more_node_names, full_path, link_path):
         """
@@ -337,7 +349,8 @@ class PackageModeler(object):
         # Store node name with package to ensure uniqueness
         ref_name = "/".join([pkg_name, file_base])
 
-        file_path = full_path
+        file_paths = [path for path in (full_path, link_path) if path is not None]
+        file_path = file_paths[0] if len(file_paths) == 1 else file_paths
 
         if ref_name in self._node_bank:
             print(
@@ -346,7 +359,7 @@ class PackageModeler(object):
                 flush=True,
             )
 
-        node = self._node_bank[full_path]
+        node = self._node_bank[ref_name]
         node.update_attributes(
             package=pkg_name,
             file_path=file_path,
@@ -376,10 +389,15 @@ class PackageModeler(object):
                 ):
                     continue
                 full_path = os.path.join(search_path, child_name)
+                child_link_path = (
+                    os.path.join(link_path, child_name)
+                    if link_path is not None
+                    else None
+                )
                 if os.path.islink(full_path):
-                    link_path = os.readlink(full_path)
+                    resolved_path = self._resolve_symlink_path(full_path)
                     self._collect_package_specs(
-                        pkg_name, link_path, pkg_data, full_path
+                        pkg_name, resolved_path, pkg_data, child_link_path or full_path
                     )
 
                 elif os.path.isfile(full_path):
@@ -399,7 +417,7 @@ class PackageModeler(object):
                         if mode & executable_flags:
                             more_node_names = []
                             self._update_node_data(
-                                pkg_name, more_node_names, full_path, link_path
+                                pkg_name, more_node_names, full_path, child_link_path
                             )
                             pkg_data.update_attributes(nodes=more_node_names)
                 elif os.path.isdir(full_path):
@@ -461,7 +479,7 @@ class PackageModeler(object):
                             pkg_data.update_attributes(parameter_files=new_params)
                     elif child_name == "bin" or child_name == "scripts":
                         more_nodes = self._find_executable_files(
-                            child_name, full_path, pkg_name, link_path
+                            child_name, full_path, pkg_name, child_link_path
                         )
                         pkg_data.update_attributes(nodes=more_nodes)
                     else:
@@ -473,7 +491,7 @@ class PackageModeler(object):
                             )
                         else:
                             self._collect_package_specs(
-                                pkg_name, full_path, pkg_data, link_path
+                                pkg_name, full_path, pkg_data, child_link_path
                             )
 
         except NotADirectoryError:

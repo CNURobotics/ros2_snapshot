@@ -23,7 +23,6 @@ import os
 import socket
 import subprocess
 import sys
-import threading
 import time
 import traceback
 
@@ -44,17 +43,22 @@ from ros2node.api import get_action_client_info
 from ros2node.api import get_action_server_info
 from ros2node.api import get_node_names
 from ros2node.api import get_publisher_info
+from ros2node.api import get_service_client_info
 from ros2node.api import get_service_server_info
 from ros2node.api import get_subscriber_info
 
-from ros2param.api import call_describe_parameters
-from ros2param.api import call_get_parameters
-from ros2param.api import call_list_parameters
 from ros2param.api import get_value
+
+import rclpy
+from rclpy.parameter_client import AsyncParameterClient
 
 from ros2_snapshot.snapshot.builders.node_builder import NodeBuilder
 from ros2_snapshot.snapshot.remapper_bank import RemapperBank
 from ros2_snapshot.snapshot.ros_model_builder import ROSModelBuilder
+
+
+class SnapshotProcessingError(RuntimeError):
+    """Raised when snapshot processing cannot continue safely."""
 
 
 class ROSSnapshot:
@@ -73,6 +77,8 @@ class ROSSnapshot:
         self._ros_specification_model = None
         self.specification_update = False
         self._unmatched_nodes = []
+
+    PARAMETER_SERVICE_TIMEOUT_SEC = 2.0
 
     @property
     def node_bank(self):
@@ -172,7 +178,7 @@ class ROSSnapshot:
         :return: the PackageBankBuilder
         :rtype: PackageBankBuilder
         """
-        return self._ros_specification_model[BankType.PACKAGE]
+        return self._ros_specification_model[BankType.PACKAGE_SPECIFICATION]
 
     def load_specifications(self, source_folder):
         """
@@ -301,7 +307,7 @@ class ROSSnapshot:
                 services_dict[server.name]["servers"].add(node_name)
                 services_dict[server.name]["types"].update(server.types)
 
-            service_clients = get_service_server_info(
+            service_clients = get_service_client_info(
                 node=node, remote_node_name=node_name, include_hidden=True
             )
             for client in service_clients:
@@ -326,6 +332,7 @@ class ROSSnapshot:
         :rtype: bool
         """
         try:
+            NodeBuilder.reset_processes()
             with NodeStrategy(None) as node:
                 try:
                     filters.NodeFilter.BASE_EXCLUSIONS.add(
@@ -398,6 +405,12 @@ class ROSSnapshot:
             print(exc.json())
 
             print(traceback.format_exc())
+            return False
+        except SnapshotProcessingError as exc:
+            Logger.get_logger().log(
+                LoggerLevel.ERROR,
+                f"Failed to extract model of ROS system: {exc}",
+            )
             return False
         Logger.get_logger().log(
             LoggerLevel.INFO, "\x1b[92mSnapshot is complete!\x1b[0m"
@@ -538,11 +551,9 @@ class ROSSnapshot:
                             LoggerLevel.ERROR,
                             f"   Failed to validate node '{node_key}'  {node_spec_remap}  !",
                         )
-                        print(type(ex))
-                        print(ex)
-                        track = traceback.format_exc()
-                        print(track)
-                        sys.exit(-1)
+                        raise SnapshotProcessingError(
+                            f"Failed to validate node '{node_key}' ({node_spec_remap})"
+                        ) from ex
                 else:
                     self._unmatched_nodes.append(node_builder)
                     Logger.get_logger().log(
@@ -553,15 +564,15 @@ class ROSSnapshot:
                     )
 
             except Exception as ex:  # noqa: B902
+                if isinstance(ex, SnapshotProcessingError):
+                    raise
                 Logger.get_logger().log(
                     LoggerLevel.ERROR,
                     f"   Failed to process node '{node_key}'  {file_name}  !",
                 )
-                print(type(ex))
-                print(ex)
-                track = traceback.format_exc()
-                print(track)
-                sys.exit(-1)
+                raise SnapshotProcessingError(
+                    f"Failed to process node '{node_key}' ({file_name})"
+                ) from ex
 
     @staticmethod
     def _match_token_types(node_name, io_names, io_builders, spec_types):
@@ -620,11 +631,14 @@ class ROSSnapshot:
                 return io_is_valid
 
         except Exception as ex:  # noqa: B902
-            print(type(ex))
-            print(ex)
-            track = traceback.format_exc()
-            print(track)
-            sys.exit(-1)
+            Logger.get_logger().log(
+                LoggerLevel.ERROR,
+                (
+                    f"Failed to match deployed data for node '{node_name}' - "
+                    f"{type(ex).__name__}: {ex}"
+                ),
+            )
+            return False
 
     @staticmethod
     def list_to_io_dict(names):
@@ -651,31 +665,16 @@ class ROSSnapshot:
 
         Logger.get_logger().log(LoggerLevel.DEBUG, f"Validating Node {node_name} ...")
         # Spec should define more parameters than we either read or write
-        if len(node_spec.parameters) < len(node_builder.parameter_names):
+        parameters = node_spec.parameters or {}
+        if len(parameters) < len(node_builder.parameter_names):
             Logger.get_logger().log(
                 LoggerLevel.WARNING,
                 f"      Node {node_name} incorrect number of parameters to read ({len(node_builder.parameter_names)}"
-                f" vs. {len(list(node_spec.parameters.keys()))})!",
-            )
-            node_is_valid = False
-
-        if len(node_spec.parameters) < len(node_builder.parameter_names):
-            Logger.get_logger().log(
-                LoggerLevel.WARNING,
-                f"      Node {node_name} incorrect number of parameters to set ({len(node_builder.parameter_names)}"
-                f" vs. {len(list(node_spec.parameters.keys()))})!",
+                f" vs. {len(list(parameters.keys()))})!",
             )
             node_is_valid = False
 
         # All parameter names once
-        parameters = node_spec.parameters
-        node_is_valid = node_is_valid and self._match_token_types(
-            node_name,
-            self.list_to_io_dict(node_builder.parameter_names),
-            self._ros_model_builder.get_bank_builder(BankType.PARAMETER),
-            parameters,
-        )
-
         node_is_valid = node_is_valid and self._match_token_types(
             node_name,
             self.list_to_io_dict(node_builder.parameter_names),
@@ -721,6 +720,34 @@ class ROSSnapshot:
         return node_is_valid
 
     @staticmethod
+    def _get_existing_spec_token_keys(spec_data, spec_token):
+        """
+        Return existing specification keys that belong to a token family.
+
+        Exact token matches come first, followed by keys using the
+        generated collision format ``<token>_<number>``.
+        """
+        matching_keys = []
+        has_exact_match = spec_token in spec_data
+        if has_exact_match:
+            matching_keys.append(spec_token)
+
+        numbered_keys = []
+        prefix = f"{spec_token}_"
+        if has_exact_match:
+            for existing_key in spec_data:
+                if not existing_key.startswith(prefix):
+                    continue
+
+                suffix = existing_key[len(prefix) :]
+                if suffix.isdigit():
+                    numbered_keys.append((int(suffix), existing_key))
+
+        numbered_keys.sort()
+        matching_keys.extend(key for _, key in numbered_keys)
+        return matching_keys
+
+    @staticmethod
     def _update_node_specification_data(spec_data, builder_data, item_builders):
         """
         Update node spec data from deployed node if unvalidated spec.
@@ -729,21 +756,32 @@ class ROSSnapshot:
         :param builder_data: data from node builder
         :param item_builders: builder list for type
         """
-        token_map = {name: 0 for name in spec_data}
+        used_keys = set()
+
         for spec_name in sorted(builder_data):
             try:
                 builder = item_builders[spec_name]
                 spec_type = builder.construct_type
                 spec_token = spec_name.split("/")[-1]
 
-                if spec_token in spec_data:
-                    # Just store as string unless multiple
-                    token_map[spec_token] += 1
-                    spec_token += "_" + str(token_map[spec_token])
+                for existing_key in ROSSnapshot._get_existing_spec_token_keys(
+                    spec_data, spec_token
+                ):
+                    if (
+                        existing_key not in used_keys
+                        and spec_data[existing_key] == spec_type
+                    ):
+                        used_keys.add(existing_key)
+                        break
                 else:
-                    token_map[spec_token] = 0
+                    next_token = spec_token
+                    suffix_index = 0
+                    while next_token in spec_data:
+                        suffix_index += 1
+                        next_token = f"{spec_token}_{suffix_index}"
 
-                spec_data[spec_token] = spec_type
+                    spec_data[next_token] = spec_type
+                    used_keys.add(next_token)
             except Exception as exc:  # noqa: B902
                 print(exc)
                 print(traceback.format_exc(), flush=True)
@@ -770,16 +808,6 @@ class ROSSnapshot:
             node_builder.parameter_names,
             self._ros_model_builder.get_bank_builder(BankType.PARAMETER),
         )
-
-        set_parameters = node_spec.parameters
-        if set_parameters is None:
-            set_parameters = {}
-        self._update_node_specification_data(
-            set_parameters,
-            node_builder.parameter_names,
-            self._ros_model_builder.get_bank_builder(BankType.PARAMETER),
-        )
-        parameters.update(set_parameters)
 
         action_clients = node_spec.action_clients
         if action_clients is None:
@@ -997,54 +1025,111 @@ class ROSSnapshot:
         """
         for service_name, service_info in service_information.items():
             collected_service = self.service_bank[service_name]
-            service_types = list(service_info["types"])
-            if len(service_types) == 1:
-                service_types = service_types[0]
+            service_types = sorted(service_info["types"])
+            service_type = service_types[0] if service_types else None
+            if len(service_types) > 1:
+                Logger.get_logger().log(
+                    LoggerLevel.WARNING,
+                    f"Service '{service_name}' has multiple types; using '{service_type}'.",
+                )
+            collected_service.construct_type = service_type
 
             for node_name in service_info["servers"]:
                 collected_service.add_service_provider_node_name(node_name)
                 self.node_bank[node_name].add_service_name_and_type(
-                    service_name, service_types
+                    service_name, service_type
                 )
 
-    def timeout_call_list_params(self, node, node_name, timeout=2):
-        """
-        Bypass parameter freezing when invoking ros2 param list.
+            for node_name in service_info["clients"]:
+                collected_service.add_service_client_node_name(node_name)
 
-        :node: NodeStrategy object
-        :node_name: name of node
-        :timeout: How long to wait until we override call_list_param hang error
+    def _call_parameter_service_with_timeout(
+        self,
+        node,
+        node_name,
+        request_factory,
+        action_description,
+        timeout=PARAMETER_SERVICE_TIMEOUT_SEC,
+    ):
+        """
+        Invoke a ROS parameter service with bounded wait times.
+
+        :param node: strategy node used to make the service request
+        :param node_name: full node name string for the remote node
+        :param request_factory: callable that creates the async request future
+        :param action_description: human-readable action name for logging
+        :param timeout: timeout in seconds for service readiness and response
+        :return: service response object, or None on timeout/failure
         """
         try:
-
-            def target(result_holder):
-                result_holder[0] = call_list_parameters(
-                    node=node, node_name=node_name.full_name, prefixes=None
-                )
-
-            result_holder = [None]
-            thread = threading.Thread(target=target, args=(result_holder,))
-            thread.start()
-            thread.join(timeout)
-
-            if thread.is_alive():
+            client = AsyncParameterClient(node, node_name)
+            if not client.wait_for_services(timeout_sec=timeout):
                 print(
-                    f"Timeout occurred calling list parameters for '{node_name.full_name}'!"
-                    " Cancelling the task and returning None ...",
+                    "Wait for service timed out waiting for "
+                    f"parameter services for node {node_name}",
                     flush=True,
                 )
-                # Note: Python does not provide a direct way to kill a thread.
-                # We are setting the result to None manually, and returning.
-                print(result_holder, flush=True)
-                result = None
+                return None
 
-            else:
-                result = result_holder[0]
+            future = request_factory(client)
+            rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
+            if not future.done():
+                print(
+                    f"Timeout occurred calling {action_description} for '{node_name}'!",
+                    flush=True,
+                )
+                return None
 
-            return result
+            response = future.result()
+            if response is None:
+                print(
+                    f"Exception while calling service of node '{node_name}': {future.exception()}",
+                    flush=True,
+                )
+                return None
+            return response
         except Exception:  # noqa: B902
-            print(f"Exception in timeout_call_list_params for '{node_name.full_name}'")
+            print(
+                f"Exception in timed parameter service call '{action_description}' for '{node_name}'",
+                flush=True,
+            )
             return None
+
+    def _list_parameters_with_timeout(
+        self, node, node_name, timeout=PARAMETER_SERVICE_TIMEOUT_SEC
+    ):
+        """List parameters with explicit service and future timeouts."""
+        return self._call_parameter_service_with_timeout(
+            node,
+            node_name,
+            lambda client: client.list_parameters(prefixes=None),
+            "list parameters",
+            timeout,
+        )
+
+    def _get_parameters_with_timeout(
+        self, node, node_name, parameter_names, timeout=PARAMETER_SERVICE_TIMEOUT_SEC
+    ):
+        """Get parameter values with explicit service and future timeouts."""
+        return self._call_parameter_service_with_timeout(
+            node,
+            node_name,
+            lambda client: client.get_parameters(parameter_names),
+            "get parameters",
+            timeout,
+        )
+
+    def _describe_parameters_with_timeout(
+        self, node, node_name, parameter_names, timeout=PARAMETER_SERVICE_TIMEOUT_SEC
+    ):
+        """Describe parameters with explicit service and future timeouts."""
+        return self._call_parameter_service_with_timeout(
+            node,
+            node_name,
+            lambda client: client.describe_parameters(parameter_names),
+            "describe parameters",
+            timeout,
+        )
 
     def _collect_parameters_info(self, node):
         """
@@ -1061,36 +1146,16 @@ class ROSSnapshot:
 
         node_names = get_node_names(node=node, include_hidden_nodes=False)
         for node_name in node_names:
-
-            # params[node_name.full_name] = self.timeout_call_list_params(
-            #     node,
-            #     node_name,
-            # )
-
-            # if param_timeout is not None:
-            #     params[node_name.full_name] = param_timeout
-            # else:
-            #     params[node_name.full_name] = "cannot_gather_param info"
-
-            params[node_name.full_name] = call_list_parameters(
+            params[node_name.full_name] = self._list_parameters_with_timeout(
                 node=node,
                 node_name=node_name.full_name,
-                prefixes=None,
             )
 
         for node_name in sorted(params.keys()):
             response = params[node_name]
             if response is None:
-                print(
-                    "Wait for service timed out waiting for "
-                    f"parameter services for node {node_name}"
-                )
                 continue
-            elif response.result() is None:
-                e = response.exception()
-                print("Exception while calling service of node " f"'{node_name}': {e}")
-                continue
-            response = response.result().result.names
+            response = response.result.names
             response = sorted(response)
 
             def get_parameter_values(node, node_name, params):
@@ -1103,8 +1168,10 @@ class ROSSnapshot:
                 :returns:
                 :rtype:
                 """
-                response = call_get_parameters(
-                    node=node, node_name=node_name, parameter_names=params
+                response = self._get_parameters_with_timeout(
+                    node=node,
+                    node_name=node_name,
+                    parameter_names=params,
                 )
 
                 # requested parameter not set
@@ -1115,8 +1182,10 @@ class ROSSnapshot:
                     )
                     values = []
                     for p in params:
-                        response = call_get_parameters(
-                            node=node, node_name=node_name, parameter_names=[p]
+                        response = self._get_parameters_with_timeout(
+                            node=node,
+                            node_name=node_name,
+                            parameter_names=[p],
                         )
                         if response is None or not response.values:
                             print(f"        '{p}' - Failed to retrieve parameter value")
@@ -1141,9 +1210,13 @@ class ROSSnapshot:
                 self.node_bank[node_name].add_parameter_name(param_full_name)
                 self.parameter_bank[param_full_name].add_info(param_info)
 
-            new_response = call_describe_parameters(
-                node=node, node_name=node_name, parameter_names=response
+            new_response = self._describe_parameters_with_timeout(
+                node=node,
+                node_name=node_name,
+                parameter_names=response,
             )
+            if new_response is None:
+                continue
             for descriptors in new_response.descriptors:
                 descriptors_full_name = os.path.join(node_name, descriptors.name)
                 self.parameter_bank[descriptors_full_name].add_description(descriptors)

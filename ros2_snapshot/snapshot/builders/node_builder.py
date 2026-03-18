@@ -45,6 +45,31 @@ class NodeBuilder(_EntityBuilder):
 
     __processes = None  # Hold list of active processes at the time of construction
 
+    @classmethod
+    def reset_processes(cls):
+        """Clear cached process data so the next snapshot starts fresh."""
+        cls.__processes = None
+
+    @classmethod
+    def _initialize_processes(cls):
+        """Populate the cached process data used for node-to-process matching."""
+        if cls.__processes is not None:
+            return
+
+        print("Gather active process information ...")
+        cls.__processes = {}
+
+        procs = list_ros_like_processes()
+
+        for proc in procs:
+            cls.__processes[proc["pid"]] = proc
+            proc["proc"].cpu_percent(None)  # Initialize counters for later calculation
+
+        for proc in procs:
+            ppid = proc["ppid"]
+            if ppid in cls.__processes:
+                cls.__processes[ppid]["assigned"] = str(proc["pid"])
+
     def __init__(self, name):
         """
         Instantiate an instance of the NodeBuilder.
@@ -54,29 +79,7 @@ class NodeBuilder(_EntityBuilder):
         :type name: str
         """
         super(NodeBuilder, self).__init__(name)
-
-        if NodeBuilder.__processes is None:
-            print("Gather active process information ...")
-            NodeBuilder.__processes = {}
-
-            procs = list_ros_like_processes()
-
-            for proc in procs:
-                NodeBuilder.__processes[proc["pid"]] = proc
-                proc["proc"].cpu_percent(
-                    None
-                )  # Initialize counters for later calculation
-
-            for proc in procs:
-                ppid = proc["ppid"]
-                if ppid in NodeBuilder.__processes:
-                    NodeBuilder.__processes[ppid]["assigned"] = str(proc["pid"])
-
-            # for proc in NodeBuilder.__processes.values():
-            #     print(
-            #         f"{proc}"
-            #     )  # ['reason']} {proc['pid']} {proc['name']} {proc['exe']} {proc['cmdline']}" )
-            # print(30 * "-", flush=True)
+        NodeBuilder._initialize_processes()
 
         self._all_topic_names = {}
         self._topic_names = {"published": {}, "subscribed": {}}
@@ -175,7 +178,7 @@ class NodeBuilder(_EntityBuilder):
         :return: dictionary of system processes data
         :rtype: dict
         """
-        return NodeBuilder.__processes
+        return NodeBuilder.__processes or {}
 
     @property
     def node(self):

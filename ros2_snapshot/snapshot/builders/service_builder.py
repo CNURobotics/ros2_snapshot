@@ -24,10 +24,6 @@ information for the purpose of extracting metamodel instances
 from ros2_snapshot.core.metamodels import Service
 from ros2_snapshot.core.utilities import filters
 
-from ros2cli.node.strategy import NodeStrategy
-
-from ros2service.api import get_service_names_and_types
-
 from ros2_snapshot.snapshot.builders.base_builders import _EntityBuilder
 
 
@@ -51,7 +47,8 @@ class ServiceBuilder(_EntityBuilder):
         :type name: str
         """
         super(ServiceBuilder, self).__init__(name)
-        self._arguments = None
+        self._construct_type = None
+        self._service_client_node_names = set()
         self._service_provider_node_names = set()
 
     @property
@@ -62,15 +59,12 @@ class ServiceBuilder(_EntityBuilder):
         :return: the Service's ROS type
         :rtype: str
         """
-        with NodeStrategy(None) as node:
-            self.services_type = {}
-            srv_name_and_types = get_service_names_and_types(
-                node=node, include_hidden_services=True
-            )
-            for service in srv_name_and_types:
-                self.services_type[service[0]] = service[1][0]
+        return self._construct_type
 
-        return self.services_type[self.name]
+    @construct_type.setter
+    def construct_type(self, construct_type):
+        """Cache the Service's ROS type from the collected graph data."""
+        self._construct_type = construct_type
 
     @property
     def service_provider_node_names(self):
@@ -88,6 +82,36 @@ class ServiceBuilder(_EntityBuilder):
                 if not node_filter.should_filter_out(name)
             }
         )
+
+    @property
+    def service_client_node_names(self):
+        """
+        Return the names of the ROS Nodes that act as Clients.
+
+        :return: the names of the Service Client ROS Nodes
+        :rtype: set{str}
+        """
+        node_filter = filters.NodeFilter.get_filter()
+        return list(
+            {
+                name
+                for name in self._service_client_node_names
+                if not node_filter.should_filter_out(name)
+            }
+        )
+
+    def add_service_client_node_name(self, service_client_node_name):
+        """
+        Add service client node name.
+
+        Adds an association between a Service Client ROS Node's name
+        and this Service
+
+        :param service_client_node_name: the Service Client ROS
+            Node name to associate with this Service
+        :type service_client_node_name: str
+        """
+        self._service_client_node_names.add(service_client_node_name)
 
     def add_service_provider_node_name(self, service_provider_node_name):
         """
@@ -116,6 +140,7 @@ class ServiceBuilder(_EntityBuilder):
             source="ros_snapshot",
             name=self.name,
             construct_type=self.construct_type,
+            service_client_node_names=self.service_client_node_names,
             service_provider_node_names=self.service_provider_node_names,
         )
         return service_metamodel

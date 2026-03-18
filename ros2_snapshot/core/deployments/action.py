@@ -14,7 +14,7 @@
 
 """Metamodels used to model ROS Actions and the Banks that contain them."""
 
-from typing import ClassVar, List, Optional, Union
+from typing import ClassVar, List, Optional, Set, Union
 
 from ros2_snapshot.core.base_metamodel import _BankMetamodel, _EntityMetamodel
 
@@ -24,9 +24,9 @@ class Action(_EntityMetamodel):
 
     yaml_tag: ClassVar[str] = "!Action"
 
-    client_node_names: Optional[Union[str, List[str]]] = None
+    client_node_names: Optional[Union[Set[str], List[str], str]] = None
     construct_type: Optional[str] = None
-    server_node_names: Optional[Union[str, List[str]]] = None
+    server_node_names: Optional[Union[Set[str], List[str], str]] = None
 
     def __init__(self, **kwargs):
         """Initialize the Action metamodel."""

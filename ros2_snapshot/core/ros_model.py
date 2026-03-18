@@ -91,9 +91,9 @@ class ROSModel:
         BankType.MACHINE: metamodels.MachineBank,
         BankType.PACKAGE_SPECIFICATION: metamodels.PackageSpecificationBank,
         BankType.NODE_SPECIFICATION: metamodels.NodeSpecificationBank,
-        BankType.MESSAGE_SPECIFICATION: metamodels.TypeSpecification,
-        BankType.SERVICE_SPECIFICATION: metamodels.TypeSpecification,
-        BankType.ACTION_SPECIFICATION: metamodels.TypeSpecification,
+        BankType.MESSAGE_SPECIFICATION: metamodels.TypeSpecificationBank,
+        BankType.SERVICE_SPECIFICATION: metamodels.TypeSpecificationBank,
+        BankType.ACTION_SPECIFICATION: metamodels.TypeSpecificationBank,
     }
 
     _ros_model_yaml_initialized = False
@@ -128,7 +128,12 @@ class ROSModel:
             raise ValueError(f"Invalid bank type '{bank_type}'")
 
         if bank_type not in self._bank_dictionary:
-            self._bank_dictionary[bank_type] = {}
+            self._bank_dictionary[bank_type] = ROSModel.BANK_TYPES_TO_BANK_CLASS[
+                bank_type
+            ]()
+
+        bank = self._bank_dictionary[bank_type]
+        expected_entity_class = bank.entity_class(None)
 
         # Validate the inputs
         for key, value in list(bank_dictionary.items()):
@@ -136,10 +141,10 @@ class ROSModel:
                 raise KeyError(
                     f"ROSModel.update_bank: All keys must be strings - not '{type(key)}'"
                 )
-            if not isinstance(value, self._bank_dictionary[bank_type].entity_class):
+            if not isinstance(value, expected_entity_class):
                 raise ValueError(
                     "ROSModel.update_bank: All values must be "
-                    f"'{self._bank_dictionary[bank_type].entity_class.__name__}'"
+                    f"'{expected_entity_class.__name__}'"
                     f" - not '{value.__class__.__name__}'"
                 )
 
@@ -147,7 +152,7 @@ class ROSModel:
         Logger.get_logger().log(
             LoggerLevel.INFO, f"Update '{self.BANK_TYPES_TO_OUTPUT_NAMES[bank_type]}'"
         )
-        self._bank_dictionary[bank_type].update(bank_dictionary)
+        bank.names_to_metamodels.update(bank_dictionary)
 
     def __getitem__(self, key):
         """
@@ -253,9 +258,19 @@ class ROSModel:
         """
         try:
 
+            def to_json_compatible(obj):
+                """Convert nested collections into JSON-safe structures."""
+                if isinstance(obj, dict):
+                    return {k: to_json_compatible(v) for k, v in obj.items()}
+                if isinstance(obj, set):
+                    return [to_json_compatible(v) for v in sorted(obj)]
+                if isinstance(obj, list):
+                    return [to_json_compatible(v) for v in obj]
+                return obj
+
             def metamodel_json_encoder(obj):
                 if isinstance(obj, _EntityMetamodel):
-                    obj_dict = obj.dict()
+                    obj_dict = to_json_compatible(obj.dict())
                     obj_dict["__type__"] = obj.__class__.__name__
                     return obj_dict
                 elif isinstance(obj, _BankMetamodel):
@@ -451,7 +466,12 @@ class ROSModel:
                         f"{traceback.format_exc()}"
                     ),
                 )
-                sys.exit(-1)
+                raise yaml.constructor.ConstructorError(
+                    None,
+                    None,
+                    f"Invalid bank construction for {bank_class.__name__}: {exc}",
+                    node.start_mark,
+                ) from exc
 
         # Register representers for all metaclasses dynamically
         for subclass in _EntityMetamodel.__subclasses__():
@@ -500,26 +520,36 @@ class ROSModel:
                 os.path.expanduser(directory_path),
                 f"{base_file_name}_{bank_output_name}.yaml",
             )
+            expected_bank_class = ROSModel.BANK_TYPES_TO_BANK_CLASS[bank_type]
             try:
                 with open(file_path, "r") as fin:
                     bank_data = yaml.load(fin, Loader=yaml.FullLoader)
-                    if "specification" not in file_path:
-                        print(f"DATA: \t{bank_data}")
+                    if not isinstance(bank_data, expected_bank_class):
+                        raise yaml.constructor.ConstructorError(
+                            None,
+                            None,
+                            (
+                                f"Invalid YAML bank data for '{bank_output_name}'"
+                                f" - expected {expected_bank_class.__name__},"
+                                f" got {type(bank_data).__name__}"
+                            ),
+                            None,
+                        )
                     bank_dict[bank_type] = bank_data
-            except yaml.constructor.ConstructorError as exc:
+            except yaml.YAMLError as exc:
                 Logger.get_logger().log(
                     LoggerLevel.ERROR,
                     f"Failed to read YAML data for '{bank_output_name}' : '{file_path}'\n"
                     f"     {type(exc)} - {exc}",
                 )
 
-                bank_dict[bank_type] = ROSModel.BANK_TYPES_TO_BANK_CLASS[bank_type]()
+                bank_dict[bank_type] = expected_bank_class()
             except IOError:
                 Logger.get_logger().log(
                     LoggerLevel.ERROR,
                     f"Failed to read YAML data for '{bank_output_name}' : '{file_path}'",
                 )
-                bank_dict[bank_type] = ROSModel.BANK_TYPES_TO_BANK_CLASS[bank_type]()
+                bank_dict[bank_type] = expected_bank_class()
 
         # Create instance of the model class
         return ROSModel(bank_dict)
@@ -642,10 +672,6 @@ class ROSModel:
                     LoggerLevel.ERROR,
                     f"Unexpected Error: Failed to read Pickle data for '{bank_output_name}' : '{file_path}' with {type(exc)}",
                 )
-
-                print(traceback.format_exc(), flush=True)
-
-                sys.exit(-1)
                 bank_dict[bank_type] = ROSModel.BANK_TYPES_TO_BANK_CLASS[bank_type]()
 
         # Create instance of the model class

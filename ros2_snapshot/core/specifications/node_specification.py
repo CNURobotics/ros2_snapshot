@@ -27,7 +27,7 @@ class NodeSpecification(_EntityMetamodel):
     source: Optional[Union[str, List[str]]] = None
     action_clients: Optional[Union[List[str], Dict[str, str]]] = None
     action_servers: Optional[Union[List[str], Dict[str, str]]] = None
-    file_path: Optional[str] = None
+    file_path: Optional[Union[str, List[str]]] = None
     package: Optional[str] = None
     parameters: Optional[Union[List[str], Dict[str, str]]] = None
     published_topics: Optional[Union[List[str], Dict[str, str]]] = None

@@ -25,12 +25,14 @@ class Service(_EntityMetamodel):
     yaml_tag: ClassVar[str] = "!Service"
 
     construct_type: Optional[str] = None
+    service_client_node_names: Optional[Union[Set[str], List[str]]] = None
     service_provider_node_names: Optional[Union[Set[str], List[str]]] = None
 
     def __init__(self, **kwargs):
         """Initialize the Nodelet metamodel."""
         super().__init__(**kwargs)
         self.construct_type = kwargs.get("construct_type", None)
+        self.service_client_node_names = kwargs.get("service_client_node_names", None)
         self.service_provider_node_names = kwargs.get(
             "service_provider_node_names", None
         )
