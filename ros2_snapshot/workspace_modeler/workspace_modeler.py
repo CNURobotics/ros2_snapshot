@@ -286,7 +286,47 @@ class PackageModeler(object):
 
         return "not installed in OS"
 
-    def _find_executable_files(self, child_name, full_path, pkg_name, link_path=None):
+    def _path_cycle_key(self, path):
+        """Return a stable key for detecting recursive path traversal."""
+        try:
+            if os.path.islink(path):
+                target_path = self._resolve_symlink_path(path)
+                if os.path.isdir(target_path):
+                    stat_result = os.stat(target_path)
+                    return ("dir", stat_result.st_dev, stat_result.st_ino)
+                return ("path", os.path.normcase(os.path.abspath(path)))
+
+            if os.path.isdir(path):
+                stat_result = os.stat(path)
+                return ("dir", stat_result.st_dev, stat_result.st_ino)
+
+            return ("path", os.path.normcase(os.path.abspath(path)))
+        except OSError:
+            return ("path", os.path.normcase(os.path.abspath(path)))
+
+    @staticmethod
+    def _merge_file_paths(existing_path, new_paths):
+        """Merge file paths while preserving order and removing duplicates."""
+        merged_paths = []
+
+        if existing_path is not None:
+            if isinstance(existing_path, list):
+                merged_paths.extend(existing_path)
+            else:
+                merged_paths.append(existing_path)
+
+        merged_paths.extend(new_paths)
+        merged_paths = list(dict.fromkeys(merged_paths))
+        return merged_paths[0] if len(merged_paths) == 1 else merged_paths
+
+    def _find_executable_files(
+        self,
+        child_name,
+        full_path,
+        pkg_name,
+        link_path=None,
+        _active_paths=None,
+    ):
         """
         Look in this and sub-folders for executable files.
 
@@ -296,36 +336,59 @@ class PackageModeler(object):
         :return : List of strings as potential nodes.
         """
         more_node_names = []
-        if os.path.islink(full_path):
-            new_path = self._resolve_symlink_path(full_path)
+        if _active_paths is None:
+            _active_paths = set()
 
-            more_node_names.extend(
-                self._find_executable_files(child_name, new_path, pkg_name, full_path)
-            )
-        elif os.path.isfile(full_path):
-            status = os.stat(full_path)
-            mode = status.st_mode
-            if mode & executable_flags:
-                self._update_node_data(pkg_name, more_node_names, full_path, link_path)
-            # else:
-            #    file_path_base, file_ext = os.path.splitext(full_path)
-            #    file_base = os.path.basename(file_path_base)
+        visit_key = self._path_cycle_key(full_path)
+        if visit_key in _active_paths:
+            return more_node_names
 
-        elif os.path.isdir(full_path):
-            for child_name in os.listdir(full_path):
-                if child_name in ("__pycache__", "hook") or "egg-info" in child_name:
-                    # Skip some standard subfolders
-                    continue
-                new_path = os.path.join(full_path, child_name)
-                new_link_path = (
-                    os.path.join(link_path, child_name)
-                    if link_path is not None
-                    else None
+        _active_paths.add(visit_key)
+        try:
+            if os.path.islink(full_path):
+                new_path = self._resolve_symlink_path(full_path)
+
+                more_node_names.extend(
+                    self._find_executable_files(
+                        child_name,
+                        new_path,
+                        pkg_name,
+                        full_path,
+                        _active_paths,
+                    )
                 )
-                more_nodes = self._find_executable_files(
-                    child_name, new_path, pkg_name, new_link_path
-                )
-                more_node_names.extend(more_nodes)
+            elif os.path.isfile(full_path):
+                status = os.stat(full_path)
+                mode = status.st_mode
+                if mode & executable_flags:
+                    self._update_node_data(
+                        pkg_name, more_node_names, full_path, link_path
+                    )
+                # else:
+                #    file_path_base, file_ext = os.path.splitext(full_path)
+                #    file_base = os.path.basename(file_path_base)
+
+            elif os.path.isdir(full_path):
+                for child_name in os.listdir(full_path):
+                    if child_name in ("__pycache__", "hook") or "egg-info" in child_name:
+                        # Skip some standard subfolders
+                        continue
+                    new_path = os.path.join(full_path, child_name)
+                    new_link_path = (
+                        os.path.join(link_path, child_name)
+                        if link_path is not None
+                        else None
+                    )
+                    more_nodes = self._find_executable_files(
+                        child_name,
+                        new_path,
+                        pkg_name,
+                        new_link_path,
+                        _active_paths,
+                    )
+                    more_node_names.extend(more_nodes)
+        finally:
+            _active_paths.remove(visit_key)
 
         return more_node_names
 
@@ -349,8 +412,11 @@ class PackageModeler(object):
         # Store node name with package to ensure uniqueness
         ref_name = "/".join([pkg_name, file_base])
 
-        file_paths = [path for path in (full_path, link_path) if path is not None]
-        file_path = file_paths[0] if len(file_paths) == 1 else file_paths
+        file_paths = list(
+            dict.fromkeys(
+                path for path in (full_path, link_path) if path is not None
+            )
+        )
 
         if ref_name in self._node_bank:
             print(
@@ -360,13 +426,16 @@ class PackageModeler(object):
             )
 
         node = self._node_bank[ref_name]
+        file_path = self._merge_file_paths(node.file_path, file_paths)
         node.update_attributes(
             package=pkg_name,
-            file_path=file_path,
             source=PackageModeler.source_name,
         )
+        node.file_path = file_path
 
-    def _collect_package_specs(self, pkg_name, search_path, pkg_data, link_path=None):
+    def _collect_package_specs(
+        self, pkg_name, search_path, pkg_data, link_path=None, _active_paths=None
+    ):
         """
         Process each package to extract specifications.
 
@@ -374,6 +443,14 @@ class PackageModeler(object):
         : pkg_data - package meta data instance
         : return None
         """
+        if _active_paths is None:
+            _active_paths = set()
+
+        visit_key = self._path_cycle_key(search_path)
+        if visit_key in _active_paths:
+            return
+
+        _active_paths.add(visit_key)
         try:
             for child_name in os.listdir(search_path):
                 if child_name in (
@@ -397,7 +474,11 @@ class PackageModeler(object):
                 if os.path.islink(full_path):
                     resolved_path = self._resolve_symlink_path(full_path)
                     self._collect_package_specs(
-                        pkg_name, resolved_path, pkg_data, child_link_path or full_path
+                        pkg_name,
+                        resolved_path,
+                        pkg_data,
+                        child_link_path or full_path,
+                        _active_paths,
                     )
 
                 elif os.path.isfile(full_path):
@@ -479,7 +560,11 @@ class PackageModeler(object):
                             pkg_data.update_attributes(parameter_files=new_params)
                     elif child_name == "bin" or child_name == "scripts":
                         more_nodes = self._find_executable_files(
-                            child_name, full_path, pkg_name, child_link_path
+                            child_name,
+                            full_path,
+                            pkg_name,
+                            child_link_path,
+                            _active_paths,
                         )
                         pkg_data.update_attributes(nodes=more_nodes)
                     else:
@@ -491,7 +576,11 @@ class PackageModeler(object):
                             )
                         else:
                             self._collect_package_specs(
-                                pkg_name, full_path, pkg_data, child_link_path
+                                pkg_name,
+                                full_path,
+                                pkg_data,
+                                child_link_path,
+                                _active_paths,
                             )
 
         except NotADirectoryError:
@@ -499,81 +588,108 @@ class PackageModeler(object):
         except Exception as exc:  # noqa: B902
             print(f"Error collecting package specs!\n    {exc}")
             raise exc
+        finally:
+            _active_paths.remove(visit_key)
 
     def _extract_type_specifications(
-        self, spec_bank, full_path, spec_type, pkg_name, base_name
+        self, spec_bank, full_path, spec_type, pkg_name, base_name, _active_paths=None
     ):
         """Extract a specification for action, message, or services given path and type."""
         spec_names = []
+        if _active_paths is None:
+            _active_paths = set()
+
+        visit_key = self._path_cycle_key(full_path)
+        if visit_key in _active_paths:
+            return spec_names
+
+        _active_paths.add(visit_key)
 
         spec_ext = f".{spec_type.name.lower()}"
+        try:
+            for child_name in os.listdir(full_path):
+                child_path = os.path.join(full_path, child_name)
+                if os.path.isfile(child_path):
+                    file_base, file_ext = os.path.splitext(child_name)
 
-        for child_name in os.listdir(full_path):
-            child_path = os.path.join(full_path, child_name)
-            if os.path.isfile(child_path):
-                file_base, file_ext = os.path.splitext(child_name)
+                    if file_ext == spec_ext:
+                        try:
+                            with open(child_path, "r") as fin:
+                                # prepend newline for output formatting in yaml
+                                spec_text = "\n" + fin.read()
 
-                if file_ext == spec_ext:
-                    try:
-                        with open(child_path, "r") as fin:
-                            # prepend newline for output formatting in yaml
-                            spec_text = "\n" + fin.read()
+                                # Include base_name for sub folder processing
+                                ref_name = "/".join(base_name + [file_base])
+                                spec_names.append(
+                                    ref_name
+                                )  # add to list of specs per package
 
-                            # Include base_name for sub folder processing
-                            ref_name = "/".join(base_name + [file_base])
-                            spec_names.append(
-                                ref_name
-                            )  # add to list of specs per package
+                                # Store specification name with package to ensure uniqueness
+                                ref_name = "/".join(
+                                    [os.path.basename(pkg_name)] + [ref_name]
+                                )
+                                spec = spec_bank[ref_name]
+                                spec.update_attributes(
+                                    construct_type=spec_ext[1:],
+                                    package=os.path.basename(pkg_name),
+                                    file_path=child_path,
+                                    spec=spec_text,
+                                    source=PackageModeler.source_name,
+                                )
+                        except IOError as ex:
+                            print(" IOError reading spec:", type(ex), ex)
+                            print("   ", child_path)
+                        except Exception as ex:  # noqa: B902
+                            print(" Unknown error reading spec:", type(ex), ex)
+                            print("   ", child_path)
+                            raise ex
 
-                            # Store specification name with package to ensure uniqueness
-                            ref_name = "/".join(
-                                [os.path.basename(pkg_name)] + [ref_name]
-                            )
-                            spec = spec_bank[ref_name]
-                            spec.update_attributes(
-                                construct_type=spec_ext[1:],
-                                package=os.path.basename(pkg_name),
-                                file_path=child_path,
-                                spec=spec_text,
-                                source=PackageModeler.source_name,
-                            )
-                    except IOError as ex:
-                        print(" IOError reading spec:", type(ex), ex)
-                        print("   ", child_path)
-                    except Exception as ex:  # noqa: B902
-                        print(" Unknown error reading spec:", type(ex), ex)
-                        print("   ", child_path)
-                        raise ex
-
-            elif os.path.isdir(child_path):
-                # Recurse into sub-folders to see if sub-specifications are defined
-                sub_specs = self._extract_type_specifications(
-                    spec_bank,
-                    child_path,
-                    spec_type,
-                    pkg_name,
-                    base_name + [child_name],
-                )
-                spec_names.extend(sub_specs)
+                elif os.path.isdir(child_path):
+                    # Recurse into sub-folders to see if sub-specifications are defined
+                    sub_specs = self._extract_type_specifications(
+                        spec_bank,
+                        child_path,
+                        spec_type,
+                        pkg_name,
+                        base_name + [child_name],
+                        _active_paths,
+                    )
+                    spec_names.extend(sub_specs)
+        finally:
+            _active_paths.remove(visit_key)
 
         return spec_names
 
-    def _find_files_of_type(self, target_ext, full_path, pkg_name, sub_folder=""):
+    def _find_files_of_type(
+        self, target_ext, full_path, pkg_name, sub_folder="", _active_paths=None
+    ):
         """Find all files of given type in folder."""
         file_names = []
-        for child_name in os.listdir(full_path):
-            child_path = os.path.join(full_path, child_name)
-            if os.path.isfile(child_path):
-                if child_name.endswith(target_ext):
-                    file_names.append(os.path.join(sub_folder, child_name))
-            elif os.path.isdir(child_path):
-                sub_file_names = self._find_files_of_type(
-                    target_ext,
-                    child_path,
-                    pkg_name,
-                    sub_folder=os.path.join(sub_folder, child_name),
-                )
-                file_names.extend(sub_file_names)
+        if _active_paths is None:
+            _active_paths = set()
+
+        visit_key = self._path_cycle_key(full_path)
+        if visit_key in _active_paths:
+            return file_names
+
+        _active_paths.add(visit_key)
+        try:
+            for child_name in os.listdir(full_path):
+                child_path = os.path.join(full_path, child_name)
+                if os.path.isfile(child_path):
+                    if child_name.endswith(target_ext):
+                        file_names.append(os.path.join(sub_folder, child_name))
+                elif os.path.isdir(child_path):
+                    sub_file_names = self._find_files_of_type(
+                        target_ext,
+                        child_path,
+                        pkg_name,
+                        sub_folder=os.path.join(sub_folder, child_name),
+                        _active_paths=_active_paths,
+                    )
+                    file_names.extend(sub_file_names)
+        finally:
+            _active_paths.remove(visit_key)
 
         return file_names
 
