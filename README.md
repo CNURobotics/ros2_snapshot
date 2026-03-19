@@ -21,7 +21,7 @@ This repository includes the following modules:
 
 ## Requirements
 
-This package has been tested on Ubuntu 24.04 with ROS Jazzy and ROS Kilted.
+This version of the package has been tested under ROS Jazzy, Kilted, and Rolling running Ubuntu 24.04.
 
 Before using `ros2_snapshot`, make sure:
 
@@ -126,8 +126,6 @@ Inspect the resulting deployment model files under `~/.snapshot_modeling`.
 ## Known issues
 
 This project is an ongoing development effort and may be subject to future changes.
-
-This version of the package has been tested under ROS Jazzy, Kilted, and Rolling running Ubuntu 24.04.
 
 See the individual module READMEs for additional information.
 
