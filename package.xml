@@ -17,7 +17,6 @@
   <exec_depend>ros2param</exec_depend>
   <exec_depend>ros2pkg</exec_depend>
   <exec_depend>ros2service</exec_depend>
-  <exec_depend>python3-apt</exec_depend>
   <exec_depend>python3-graphviz</exec_depend>
   <exec_depend>python3-psutil</exec_depend>
   <exec_depend>python3-pydantic</exec_depend>
