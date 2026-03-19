@@ -12,13 +12,58 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 from ros2_snapshot.snapshot.builders.service_bank_builder import ServiceBankBuilder
+from ros2_snapshot.snapshot import snapshot as snapshot_module
 from ros2_snapshot.snapshot.ros_model_builder import ROSModelBuilder
-from ros2_snapshot.snapshot.snapshot import ROSSnapshot
+
+
+def test_collect_system_info_uses_service_client_api(monkeypatch):
+    ros_snapshot = snapshot_module.ROSSnapshot()
+    ros_node = SimpleNamespace(full_name="/demo_node")
+    service_server = SimpleNamespace(
+        name="/demo_server",
+        types=["std_srvs/srv/Empty"],
+    )
+    service_client = SimpleNamespace(
+        name="/demo_client",
+        types=["example_interfaces/srv/AddTwoInts"],
+    )
+
+    monkeypatch.setattr(
+        snapshot_module,
+        "get_node_names",
+        lambda node, include_hidden_nodes=True: [ros_node],
+    )
+    monkeypatch.setattr(snapshot_module, "get_action_server_info", lambda **kwargs: [])
+    monkeypatch.setattr(snapshot_module, "get_action_client_info", lambda **kwargs: [])
+    monkeypatch.setattr(snapshot_module, "get_publisher_info", lambda **kwargs: [])
+    monkeypatch.setattr(snapshot_module, "get_subscriber_info", lambda **kwargs: [])
+    monkeypatch.setattr(
+        snapshot_module,
+        "get_service_server_info",
+        lambda **kwargs: [service_server],
+    )
+    monkeypatch.setattr(
+        snapshot_module,
+        "get_service_client_info",
+        lambda **kwargs: [service_client],
+    )
+
+    _, nodes, services, _ = ros_snapshot.collect_system_info(node=object())
+
+    assert nodes == [ros_node]
+    assert services["/demo_server"]["servers"] == {"/demo_node"}
+    assert services["/demo_server"]["clients"] == set()
+    assert services["/demo_server"]["types"] == {"std_srvs/srv/Empty"}
+    assert services["/demo_client"]["servers"] == set()
+    assert services["/demo_client"]["clients"] == {"/demo_node"}
+    assert services["/demo_client"]["types"] == {"example_interfaces/srv/AddTwoInts"}
 
 
 def test_collect_services_info_tracks_service_clients_and_providers():
-    ros_snapshot = ROSSnapshot()
+    ros_snapshot = snapshot_module.ROSSnapshot()
     ros_snapshot._ros_model_builder = ROSModelBuilder([])
 
     ros_snapshot._collect_services_info(
@@ -42,7 +87,7 @@ def test_collect_services_info_tracks_service_clients_and_providers():
 
 
 def test_collect_services_info_marks_ambiguous_service_types_explicitly():
-    ros_snapshot = ROSSnapshot()
+    ros_snapshot = snapshot_module.ROSSnapshot()
     ros_snapshot._ros_model_builder = ROSModelBuilder([])
 
     ros_snapshot._collect_services_info(
@@ -64,7 +109,7 @@ def test_collect_services_info_marks_ambiguous_service_types_explicitly():
 
 
 def test_service_metamodel_preserves_client_node_names():
-    ros_snapshot = ROSSnapshot()
+    ros_snapshot = snapshot_module.ROSSnapshot()
     ros_snapshot._ros_model_builder = ROSModelBuilder([])
 
     service_builder = ros_snapshot.service_bank["/demo_service"]
