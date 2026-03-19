@@ -370,7 +370,10 @@ class PackageModeler(object):
 
             elif os.path.isdir(full_path):
                 for child_name in os.listdir(full_path):
-                    if child_name in ("__pycache__", "hook") or "egg-info" in child_name:
+                    if (
+                        child_name in ("__pycache__", "hook")
+                        or "egg-info" in child_name
+                    ):
                         # Skip some standard subfolders
                         continue
                     new_path = os.path.join(full_path, child_name)
@@ -413,9 +416,7 @@ class PackageModeler(object):
         ref_name = "/".join([pkg_name, file_base])
 
         file_paths = list(
-            dict.fromkeys(
-                path for path in (full_path, link_path) if path is not None
-            )
+            dict.fromkeys(path for path in (full_path, link_path) if path is not None)
         )
 
         if ref_name in self._node_bank:

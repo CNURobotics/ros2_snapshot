@@ -17,7 +17,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from rclpy.endpoint_info import EndpointTypeEnum
+try:
+    from rclpy.endpoint_info import EndpointTypeEnum
+except ImportError:
+    from rclpy.topic_endpoint_info import TopicEndpointTypeEnum as EndpointTypeEnum
 
 from ros2_snapshot.snapshot import snapshot as snapshot_module
 from ros2_snapshot.snapshot.ros_model_builder import ROSModelBuilder
@@ -222,6 +225,68 @@ def test_collect_rosgraph_info_populates_banks_from_graph_data(monkeypatch):
     assert ros_snapshot.parameter_bank["/listener/queue_size"].value == 10
 
 
+def test_create_nodes_with_topics_uses_direct_node_for_verbose_topic_queries(
+    monkeypatch,
+):
+    reset_filters(monkeypatch)
+    patch_process_lookup(monkeypatch)
+
+    ros_snapshot = snapshot_module.ROSSnapshot()
+    ros_snapshot._ros_model_builder = ROSModelBuilder(
+        [("/chatter", "std_msgs/msg/String")]
+    )
+
+    talker = make_node("/talker")
+    listener = make_node("/listener")
+    graph_node = FakeGraphNode(
+        publishers_by_topic={
+            "/chatter": [
+                make_topic_endpoint(
+                    "/talker",
+                    EndpointTypeEnum.PUBLISHER,
+                    [1, 2, 3, 4],
+                )
+            ]
+        },
+        subscriptions_by_topic={
+            "/chatter": [
+                make_topic_endpoint(
+                    "/listener",
+                    EndpointTypeEnum.SUBSCRIPTION,
+                    [5, 6, 7, 8],
+                )
+            ]
+        },
+    )
+
+    class StrategyWrapper:
+        def __init__(self, direct_node):
+            self.direct_node = direct_node
+
+        def get_publishers_info_by_topic(self, topic_name):
+            raise AssertionError("strategy wrapper should not serve verbose topic info")
+
+        def get_subscriptions_info_by_topic(self, topic_name):
+            raise AssertionError("strategy wrapper should not serve verbose topic info")
+
+    ros_snapshot._create_nodes_with_topics(
+        {
+            "/chatter": {
+                "publishers": {"/talker"},
+                "subscribers": {"/listener"},
+                "types": {"std_msgs/msg/String"},
+            }
+        },
+        StrategyWrapper(graph_node),
+        [talker, listener],
+    )
+
+    topic_builder = ros_snapshot.topic_bank["/chatter"]
+    assert topic_builder.publisher_node_names == ["/talker"]
+    assert topic_builder.subscriber_node_names == ["/listener"]
+    assert topic_builder.endpoint_type == "[multiple] PUBLISHER | SUBSCRIPTION"
+
+
 def test_snapshot_happy_path_extracts_deployment_model(monkeypatch):
     reset_filters(monkeypatch)
     patch_process_lookup(monkeypatch)
@@ -262,7 +327,11 @@ def test_snapshot_happy_path_extracts_deployment_model(monkeypatch):
             super().__init__(
                 graph_node._publishers_by_topic, graph_node._subscriptions_by_topic
             )
-            self.direct_node = SimpleNamespace(get_name=lambda: "snapshot_direct")
+            self.direct_node = SimpleNamespace(
+                get_name=lambda: "snapshot_direct",
+                get_publishers_info_by_topic=self.get_publishers_info_by_topic,
+                get_subscriptions_info_by_topic=self.get_subscriptions_info_by_topic,
+            )
             self.daemon_node = SimpleNamespace(get_name=lambda: "snapshot_daemon")
 
         def __enter__(self):

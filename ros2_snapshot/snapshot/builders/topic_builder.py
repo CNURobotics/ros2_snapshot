@@ -27,7 +27,12 @@ from ros2_snapshot.core.utilities.logger import Logger, LoggerLevel
 
 from pydantic.error_wrappers import ValidationError
 
-from rclpy.endpoint_info import EndpointTypeEnum
+try:
+    from rclpy.endpoint_info import EndpointTypeEnum
+except ImportError:
+    # Fall back to the older location of EndpointTypeEnum in rclpy.topic_endpoint_info
+    from rclpy.topic_endpoint_info import TopicEndpointTypeEnum as EndpointTypeEnum
+
 
 from ros2_snapshot.snapshot.builders.base_builders import _EntityBuilder
 
@@ -110,10 +115,7 @@ class TopicBuilder(_EntityBuilder):
         if not self._qos_profiles:
             return {}
 
-        profiles = [
-            self._qos_profiles[key]
-            for key in sorted(self._qos_profiles)
-        ]
+        profiles = [self._qos_profiles[key] for key in sorted(self._qos_profiles)]
         if len(profiles) == 1:
             return profiles[0]
 

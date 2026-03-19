@@ -14,7 +14,10 @@
 
 from types import SimpleNamespace
 
-from rclpy.endpoint_info import EndpointTypeEnum
+try:
+    from rclpy.endpoint_info import EndpointTypeEnum
+except ImportError:
+    from rclpy.topic_endpoint_info import TopicEndpointTypeEnum as EndpointTypeEnum
 
 from ros2_snapshot.core import metamodels
 from ros2_snapshot.snapshot.builders.action_builder import ActionBuilder

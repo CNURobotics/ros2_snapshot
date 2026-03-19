@@ -81,6 +81,18 @@ class ROSSnapshot:
     PARAMETER_SERVICE_TIMEOUT_SEC = 2.0
 
     @staticmethod
+    def _get_direct_runtime_node(node):
+        """
+        Return the direct ROS node when available.
+
+        ``NodeStrategy`` may route some calls through the daemon-backed XML-RPC
+        proxy, but verbose topic endpoint queries and parameter-service calls
+        require the direct rclpy node at runtime.
+        """
+        direct_node = getattr(node, "direct_node", None)
+        return direct_node if direct_node is not None else node
+
+    @staticmethod
     def _normalize_service_type(service_name, service_types):
         """
         Return a deterministic service type string from collected service types.
@@ -991,15 +1003,20 @@ class ROSSnapshot:
         for each_node in nodes:
             self.node_bank[each_node.full_name].add_info(each_node)
 
+        # Verbose topic endpoint info must come from the direct node, not the
+        # daemon-backed strategy wrapper, because the daemon XML-RPC transport
+        # cannot serialize TopicEndpointInfo objects at runtime.
+        topic_info_node = self._get_direct_runtime_node(node)
+
         for topic_name, topic_info in topics_information.items():
             self._gid_dict = {}
-            for info in node.get_publishers_info_by_topic(topic_name):
+            for info in topic_info_node.get_publishers_info_by_topic(topic_name):
                 self._gid_dict[info.node_name] = 0
                 self.topic_bank[topic_name].get_verbose_info(
                     info, self._gid_dict
                 )  # this is the verbose information we want
             collected_topic = self.topic_bank[topic_name]
-            for info in node.get_subscriptions_info_by_topic(topic_name):
+            for info in topic_info_node.get_subscriptions_info_by_topic(topic_name):
                 self._gid_dict[info.node_name] = 0
                 self.topic_bank[topic_name].get_verbose_info(
                     info, self._gid_dict
@@ -1082,7 +1099,8 @@ class ROSSnapshot:
         :return: service response object, or None on timeout/failure
         """
         try:
-            client = AsyncParameterClient(node, node_name)
+            runtime_node = self._get_direct_runtime_node(node)
+            client = AsyncParameterClient(runtime_node, node_name)
             if not client.wait_for_services(timeout_sec=timeout):
                 print(
                     "Wait for service timed out waiting for "
@@ -1092,7 +1110,7 @@ class ROSSnapshot:
                 return None
 
             future = request_factory(client)
-            rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
+            rclpy.spin_until_future_complete(runtime_node, future, timeout_sec=timeout)
             if not future.done():
                 print(
                     f"Timeout occurred calling {action_description} for '{node_name}'!",

@@ -8,3 +8,4 @@ yaml_output/*
 build
 install
 log
+.coverage
