@@ -22,6 +22,7 @@ instances
 
 from ros2_snapshot.core.metamodels import TopicBank
 from ros2_snapshot.core.utilities import filters
+from ros2_snapshot.core.utilities.logger import Logger, LoggerLevel
 
 from ros2_snapshot.snapshot.builders.base_builders import _BankBuilder
 from ros2_snapshot.snapshot.builders.topic_builder import TopicBuilder
@@ -35,6 +36,28 @@ class TopicBankBuilder(_BankBuilder):
     maintaining, and populating TopicBuilders for the purpose of
     extracting metamodel instances
     """
+
+    @staticmethod
+    def _normalize_topic_type(desired_topic, topic_type):
+        """Return a deterministic topic type string from collected topic types."""
+        if isinstance(topic_type, (list, tuple)):
+            normalized_types = sorted(topic_type)
+            if not normalized_types:
+                return None
+            if len(normalized_types) == 1:
+                return normalized_types[0]
+
+            ambiguous_type = f"[multiple] {' | '.join(normalized_types)}"
+            Logger.get_logger().log(
+                LoggerLevel.WARNING,
+                (
+                    f"Topic '{desired_topic}' has multiple reported types; "
+                    f"recording ambiguity as '{ambiguous_type}'."
+                ),
+            )
+            return ambiguous_type
+
+        return topic_type
 
     def __init__(self, topic_types):
         """
@@ -91,16 +114,7 @@ class TopicBankBuilder(_BankBuilder):
         """
         for topic, topic_type in self._topic_types:
             if topic == desired_topic:
-                obtained_topic_type = topic_type
-                if isinstance(obtained_topic_type, (list, tuple)):
-                    if len(obtained_topic_type) > 1:
-                        print(
-                            f"\x1b[93m Warning: Topic '{desired_topic}' has multiple types!\n{obtained_topic_type}]",
-                            flush=True,
-                        )
-                    else:
-                        obtained_topic_type = obtained_topic_type[0]
-                return obtained_topic_type
+                return self._normalize_topic_type(desired_topic, topic_type)
 
         return "Error: Unknown Topic Name"
 

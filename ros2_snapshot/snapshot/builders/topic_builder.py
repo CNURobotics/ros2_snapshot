@@ -23,6 +23,7 @@ information for the purpose of extracting metamodel instances
 
 from ros2_snapshot.core.metamodels import Topic
 from ros2_snapshot.core.utilities import filters
+from ros2_snapshot.core.utilities.logger import Logger, LoggerLevel
 
 from pydantic.error_wrappers import ValidationError
 
@@ -53,16 +54,15 @@ class TopicBuilder(_EntityBuilder):
         super(TopicBuilder, self).__init__(name)
         self._construct_type = None
         self._node_names = {"published": set(), "subscribed": set()}
-        self._qos_profile = {}
+        self._qos_profiles = {}
         self._gid_information = {}
-        self._topic_hash = None
-        self._endpoint_type = None
+        self._topic_hashes = set()
+        self._endpoint_types = set()
 
-    def get_verbose_info(self, info, gid_dict):
-        """Add verbose information to the topic_bank."""
-        self._node_name = info.node_name
-        qos_profile = info.qos_profile
-        self._qos_profile = {
+    @staticmethod
+    def _serialize_qos_profile(qos_profile):
+        """Serialize a QoS profile into a deterministic dictionary."""
+        return {
             "durability": str(qos_profile.durability),
             "deadline": str(qos_profile.deadline),
             "liveliness": str(qos_profile.liveliness),
@@ -72,13 +72,72 @@ class TopicBuilder(_EntityBuilder):
             "history": str(qos_profile.history),
             "depth": qos_profile.depth,
         }
+
+    @staticmethod
+    def _format_endpoint_type(endpoint_type):
+        """Return a stable string representation for a topic endpoint type."""
+        if endpoint_type == EndpointTypeEnum.PUBLISHER:
+            return "PUBLISHER"
+        if endpoint_type == EndpointTypeEnum.SUBSCRIPTION:
+            return "SUBSCRIPTION"
+        if endpoint_type == EndpointTypeEnum.CLIENT:
+            return "CLIENT"
+        if endpoint_type == EndpointTypeEnum.SERVER:
+            return "SERVER"
+        return "UNKNOWN"
+
+    def _normalize_metadata_values(self, metadata_name, values):
+        """Return a deterministic scalar metadata value or an explicit ambiguity marker."""
+        if not values:
+            return None
+
+        sorted_values = sorted(values)
+        if len(sorted_values) == 1:
+            return sorted_values[0]
+
+        ambiguous_value = f"[multiple] {' | '.join(sorted_values)}"
+        Logger.get_logger().log(
+            LoggerLevel.WARNING,
+            (
+                f"Topic '{self.name}' has multiple {metadata_name} values; "
+                f"recording ambiguity as '{ambiguous_value}'."
+            ),
+        )
+        return ambiguous_value
+
+    def _normalize_qos_profiles(self):
+        """Return a deterministic QoS profile or an explicit ambiguity structure."""
+        if not self._qos_profiles:
+            return {}
+
+        profiles = [
+            self._qos_profiles[key]
+            for key in sorted(self._qos_profiles)
+        ]
+        if len(profiles) == 1:
+            return profiles[0]
+
+        Logger.get_logger().log(
+            LoggerLevel.WARNING,
+            (
+                f"Topic '{self.name}' has multiple QoS profiles; "
+                "recording all observed profiles explicitly."
+            ),
+        )
+        return {"[multiple]": profiles}
+
+    def get_verbose_info(self, info, gid_dict):
+        """Add verbose information to the topic_bank."""
+        self._node_name = info.node_name
+        qos_profile = self._serialize_qos_profile(info.qos_profile)
+        self._qos_profiles[str(sorted(qos_profile.items()))] = qos_profile
         self._gid_information = "".join(
             format(byte, "02x") for byte in info.endpoint_gid
         )
         gid_dict[info.node_name] = self._gid_information
         self.set_gid_dict(gid_dict)
-        self._endpoint_type = info.endpoint_type
-        self._topic_hash = str(info.topic_type_hash)
+        self._endpoint_types.add(self._format_endpoint_type(info.endpoint_type))
+        self._topic_hashes.add(str(info.topic_type_hash))
 
     def set_gid_dict(self, gid_dict):
         """Set GID information."""
@@ -87,7 +146,7 @@ class TopicBuilder(_EntityBuilder):
     @property
     def qos_profile(self):
         """Get QOS profile."""
-        return self._qos_profile
+        return self._normalize_qos_profiles()
 
     @property
     def gid_information(self):
@@ -97,21 +156,12 @@ class TopicBuilder(_EntityBuilder):
     @property
     def topic_hash(self):
         """Get topic hash."""
-        return self._topic_hash
+        return self._normalize_metadata_values("topic_hash", self._topic_hashes)
 
     @property
     def endpoint_type(self):
         """Get endpoint type."""
-        if self._endpoint_type == EndpointTypeEnum.PUBLISHER:
-            return "PUBLISHER"
-        elif self._endpoint_type == EndpointTypeEnum.SUBSCRIPTION:
-            return "SUBSCRIPTION"
-        elif self._endpoint_type == EndpointTypeEnum.CLIENT:
-            return "CLIENT"
-        elif self._endpoint_type == EndpointTypeEnum.SERVER:
-            return "SERVER"
-        else:
-            return "UNKNOWN"
+        return self._normalize_metadata_values("endpoint_type", self._endpoint_types)
 
     @property
     def construct_type(self):

@@ -80,6 +80,30 @@ class ROSSnapshot:
 
     PARAMETER_SERVICE_TIMEOUT_SEC = 2.0
 
+    @staticmethod
+    def _normalize_service_type(service_name, service_types):
+        """
+        Return a deterministic service type string from collected service types.
+
+        When multiple types are reported for the same service name, preserve
+        that ambiguity explicitly instead of picking one arbitrarily.
+        """
+        sorted_types = sorted(service_types)
+        if not sorted_types:
+            return None
+        if len(sorted_types) == 1:
+            return sorted_types[0]
+
+        ambiguous_type = f"[multiple] {' | '.join(sorted_types)}"
+        Logger.get_logger().log(
+            LoggerLevel.WARNING,
+            (
+                f"Service '{service_name}' has multiple reported types; "
+                f"recording ambiguity as '{ambiguous_type}'."
+            ),
+        )
+        return ambiguous_type
+
     @property
     def node_bank(self):
         """
@@ -1025,13 +1049,9 @@ class ROSSnapshot:
         """
         for service_name, service_info in service_information.items():
             collected_service = self.service_bank[service_name]
-            service_types = sorted(service_info["types"])
-            service_type = service_types[0] if service_types else None
-            if len(service_types) > 1:
-                Logger.get_logger().log(
-                    LoggerLevel.WARNING,
-                    f"Service '{service_name}' has multiple types; using '{service_type}'.",
-                )
+            service_type = self._normalize_service_type(
+                service_name, service_info["types"]
+            )
             collected_service.construct_type = service_type
 
             for node_name in service_info["servers"]:

@@ -48,6 +48,25 @@ class ActionBuilder(_EntityBuilder):
         "/result": "Result",
     }
 
+    @staticmethod
+    def _normalize_action_type(action_name, action_types):
+        """Return a deterministic action type string from collected action types."""
+        sorted_types = sorted(action_types)
+        if not sorted_types:
+            return None
+        if len(sorted_types) == 1:
+            return sorted_types[0]
+
+        ambiguous_type = f"[multiple] {' | '.join(sorted_types)}"
+        Logger.get_logger().log(
+            LoggerLevel.WARNING,
+            (
+                f"Action '{action_name}' has multiple reported types; "
+                f"recording ambiguity as '{ambiguous_type}'."
+            ),
+        )
+        return ambiguous_type
+
     def __init__(self, name):
         """
         Instantiate an instance of the ActionBuilder.
@@ -74,8 +93,9 @@ class ActionBuilder(_EntityBuilder):
         self._client_node_names, self._server_node_names = self.get_node_info
         self._client_node_names = list(self._client_node_names)
         self._server_node_names = list(self._server_node_names)
-        for elem in list(self._action_information["types"]):
-            self._construct_type = elem
+        self._construct_type = self._normalize_action_type(
+            self.name, self._action_information["types"]
+        )
 
     @property
     def get_node_info(self):
