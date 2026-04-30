@@ -143,6 +143,7 @@ def test_node_bank_builder_merges_duplicate_machine_id_pid_processes(monkeypatch
     )
 
     from ros2_snapshot.snapshot.builders.node_bank_builder import NodeBankBuilder
+
     node_bank_builder = NodeBankBuilder(
         [
             {

@@ -169,7 +169,7 @@ See LICENSE for more information.
 
 Please use the following publications for reference when using ROS 2 Snapshot:
 
-- S. E. Fox, A. J. Farney, and D. C. Conner, "Documenting ROS 2 Systems with ROS 2 Snapshot",  SoutheastCon 2026, Huntsville, AL, USA, 2026, to appear.
+- S. Fox, A. J. Farney and D. C. Conner, ["Documenting ROS 2 Systems with ROS 2 Snapshot,"](https://doi.org/10.1109/SoutheastCon63549.2026.11476601) SoutheastCon 2026, Huntsville, AL, USA, 2026, pp. 1-6, doi: 10.1109/SoutheastCon63549.2026.11476601.
 
 This work is based on earlier work for ROS 1:
 
