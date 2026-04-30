@@ -19,8 +19,13 @@ Responsible for collecting, maintaining,
 and populating NodeBuilder instances
 """
 
+import socket
+
 from ros2_snapshot.core import metamodels
 from ros2_snapshot.core.utilities import filters
+from ros2_snapshot.core.utilities.ros_exe_filter import extract_ip_address_hints
+from ros2_snapshot.core.utilities.ros_exe_filter import get_ip_addresses
+from ros2_snapshot.core.utilities.ros_exe_filter import get_ros_network_environment
 from ros2_snapshot.core.utilities.ros_exe_filter import list_ros_like_processes
 
 from ros2_snapshot.snapshot.builders.base_builders import _BankBuilder
@@ -36,11 +41,41 @@ class NodeBankBuilder(_BankBuilder):
     extracting metamodel instances
     """
 
-    def __init__(self):
+    def __init__(self, processes=None):
         """Load the process list once and share it with all NodeBuilder instances."""
         super().__init__()
-        procs = list_ros_like_processes()
-        self._processes = {p["pid"]: p for p in procs}
+        self._has_agent_processes = processes is not None
+        remote_procs = list(processes or [])
+        local_machine = socket.gethostname()
+        # Always include local processes. Remote agent snapshots augment local data;
+        # they do not replace the capture host's process table.
+        local_procs = list_ros_like_processes()
+        local_ros_network_environment = get_ros_network_environment()
+        local_ips = get_ip_addresses(
+            local_machine,
+            preferred_addresses=extract_ip_address_hints(local_ros_network_environment),
+        )
+        for proc in local_procs:
+            proc.setdefault("machine", local_machine)
+            proc.setdefault("machine_ip_addresses", local_ips)
+            proc.setdefault(
+                "machine_ros_network_environment",
+                local_ros_network_environment,
+            )
+        procs = remote_procs + local_procs
+        self._processes = self._normalize_processes(procs)
+
+    @staticmethod
+    def _normalize_processes(procs):
+        processes = {}
+        local_machine = socket.gethostname()
+        for proc in procs:
+            machine = proc.get("machine") or local_machine
+            proc["machine"] = machine
+            process_key = proc.get("process_key") or f"{machine}:{proc['pid']}"
+            proc["process_key"] = process_key
+            processes[process_key] = proc
+        return processes
 
     @property
     def processes(self):
@@ -60,7 +95,11 @@ class NodeBankBuilder(_BankBuilder):
         :return: the newly created NodeBuilder
         :rtype: NodeBuilder
         """
-        return NodeBuilder(name, self._processes)
+        return NodeBuilder(
+            name,
+            self._processes,
+            unknown_machine_when_unmatched=self._has_agent_processes,
+        )
 
     def _should_filter_out(self, name, entity_builder):
         """

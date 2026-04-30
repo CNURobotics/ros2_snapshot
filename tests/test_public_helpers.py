@@ -66,3 +66,77 @@ def test_node_bank_builder_loads_fresh_processes_on_each_init(monkeypatch):
     NodeBankBuilder()
 
     assert calls == ["loaded", "loaded"]
+
+
+def test_node_bank_builder_merges_agent_processes_with_local_processes(monkeypatch):
+    ip_lookup_calls = []
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.socket.gethostname",
+        lambda: "local_host",
+    )
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.get_ip_addresses",
+        lambda hostname, preferred_addresses=None: ip_lookup_calls.append(
+            (hostname, preferred_addresses)
+        )
+        or ["192.0.2.30", "127.0.1.1"],
+    )
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.get_ros_network_environment",
+        lambda: {"ROS_DISCOVERY_SERVER": "192.0.2.30:11811"},
+    )
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
+        lambda: [
+            {
+                "pid": 10,
+                "ppid": 1,
+                "name": "local_node",
+                "cmdline": ["local_node"],
+                "assigned": None,
+            }
+        ],
+    )
+
+    from ros2_snapshot.snapshot.builders.node_bank_builder import NodeBankBuilder
+
+    node_bank_builder = NodeBankBuilder(
+        [
+            {
+                "pid": 10,
+                "ppid": 1,
+                "name": "remote_node",
+                "cmdline": ["remote_node"],
+                "assigned": None,
+                "machine": "remote_host",
+            }
+        ]
+    )
+
+    assert set(node_bank_builder.processes) == {"remote_host:10", "local_host:10"}
+    assert node_bank_builder.processes["remote_host:10"]["name"] == "remote_node"
+    assert node_bank_builder.processes["local_host:10"]["name"] == "local_node"
+    assert node_bank_builder.processes["local_host:10"]["machine_ip_addresses"] == [
+        "192.0.2.30",
+        "127.0.1.1",
+    ]
+    assert node_bank_builder.processes["local_host:10"][
+        "machine_ros_network_environment"
+    ] == {"ROS_DISCOVERY_SERVER": "192.0.2.30:11811"}
+    assert ip_lookup_calls == [("local_host", ["192.0.2.30"])]
+
+
+def test_node_bank_builder_marks_unmatched_nodes_unknown_when_agents_seen(monkeypatch):
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
+        lambda: [],
+    )
+
+    from ros2_snapshot.snapshot.builders.node_bank_builder import NodeBankBuilder
+    from ros2_snapshot.snapshot.builders.node_builder import UNKNOWN_MACHINE
+
+    node_bank_builder = NodeBankBuilder([])
+    node_builder = node_bank_builder["/unmatched"]
+    node_builder._process_dict = {}
+
+    assert node_builder.machine == UNKNOWN_MACHINE

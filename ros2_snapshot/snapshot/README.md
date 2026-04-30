@@ -16,6 +16,25 @@ for future use in model-based engineering.
 
 ### Usage
 
+
+
+For multi-machine deployments, run the lightweight process agent on each host first:
+
+```bash
+ros2 run ros2_snapshot agent
+```
+
+The agent automatically namespaces itself from the hostname and exposes a
+`get_process_snapshot` service. The `running` command discovers all visible
+snapshot-agent services and uses those process snapshots to populate node
+process metadata and machine-bank ownership. If no agents are available,
+`running` uses local process discovery only.
+
+The agent code is in `snapshot_agent.py` and can also be copied to a remote
+machine and run as a standalone Python script when the full package is not
+installed there.
+
+
 - The `snapshot` program assumes that it is running on the same ROS network as a
 currently deployed ROS system.
 

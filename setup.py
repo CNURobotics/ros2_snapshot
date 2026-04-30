@@ -82,6 +82,7 @@ setup(
     license="Apache 2.0",
     entry_points={
         "console_scripts": [
+            "agent = ros2_snapshot.snapshot.snapshot_agent:main",
             "running = ros2_snapshot.snapshot.snapshot:main",
             "workspace = ros2_snapshot.workspace_modeler.workspace_modeler:main",
         ],

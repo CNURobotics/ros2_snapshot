@@ -19,6 +19,8 @@ Discovers the ROS Computation Graph and stores as a snapshot_modeling model
 """
 
 import argparse
+from collections import Counter
+import json
 import os
 import socket
 import subprocess
@@ -50,6 +52,7 @@ from ros2param.api import get_value
 
 import rclpy
 from rclpy.parameter_client import AsyncParameterClient
+from std_srvs.srv import Trigger
 
 from ros2_snapshot.snapshot.remapper_bank import RemapperBank
 from ros2_snapshot.snapshot.ros_model_builder import ROSModelBuilder
@@ -77,6 +80,19 @@ class ROSSnapshot:
         self._unmatched_nodes = []
 
     PARAMETER_SERVICE_TIMEOUT_SEC = 2.0
+    SNAPSHOT_AGENT_SERVICE_TYPE = "std_srvs/srv/Trigger"
+    SNAPSHOT_AGENT_SERVICE_SUFFIX = "/get_process_snapshot"
+    SNAPSHOT_AGENT_TIMEOUT_SEC = 1.0
+
+    @staticmethod
+    def _snapshot_agent_node_name(service_name):
+        """Return the node name that serves a snapshot-agent service."""
+        service_prefix = service_name[: -len(ROSSnapshot.SNAPSHOT_AGENT_SERVICE_SUFFIX)]
+        if service_prefix.endswith("/ros2_snapshot_agent"):
+            return service_prefix
+        if service_prefix == "":
+            return "/ros2_snapshot_agent"
+        return f"{service_prefix}/ros2_snapshot_agent"
 
     @staticmethod
     def _get_direct_runtime_node(node):
@@ -89,6 +105,103 @@ class ROSSnapshot:
         """
         direct_node = getattr(node, "direct_node", None)
         return direct_node if direct_node is not None else node
+
+    def _discover_snapshot_agent_services(self, node):
+        """Return snapshot-agent services visible in the ROS graph."""
+        runtime_node = self._get_direct_runtime_node(node)
+        try:
+            services = runtime_node.get_service_names_and_types()
+        except Exception as exc:  # noqa: B902
+            Logger.get_logger().log(
+                LoggerLevel.WARNING,
+                f"Unable to discover snapshot agent services: {type(exc)} {exc}",
+            )
+            return []
+
+        agent_services = []
+        for service_name, service_types in services:
+            if not service_name.endswith(self.SNAPSHOT_AGENT_SERVICE_SUFFIX):
+                continue
+            if self.SNAPSHOT_AGENT_SERVICE_TYPE in service_types:
+                agent_services.append(service_name)
+                filters.NodeFilter.add_runtime_exclusion(
+                    self._snapshot_agent_node_name(service_name)
+                )
+        return sorted(agent_services)
+
+    def _call_snapshot_agent(self, node, service_name):
+        """Call one snapshot agent and return its process list."""
+        runtime_node = self._get_direct_runtime_node(node)
+        client = runtime_node.create_client(Trigger, service_name)
+        try:
+            if not client.wait_for_service(timeout_sec=self.SNAPSHOT_AGENT_TIMEOUT_SEC):
+                Logger.get_logger().log(
+                    LoggerLevel.WARNING,
+                    f"Timed out waiting for snapshot agent service '{service_name}'",
+                )
+                return []
+
+            future = client.call_async(Trigger.Request())
+            rclpy.spin_until_future_complete(
+                runtime_node, future, timeout_sec=self.SNAPSHOT_AGENT_TIMEOUT_SEC
+            )
+            if not future.done():
+                Logger.get_logger().log(
+                    LoggerLevel.WARNING,
+                    f"Timed out calling snapshot agent service '{service_name}'",
+                )
+                return []
+
+            response = future.result()
+            if response is None or not response.success:
+                Logger.get_logger().log(
+                    LoggerLevel.WARNING,
+                    f"Snapshot agent service '{service_name}' returned no data",
+                )
+                return []
+
+            payload = json.loads(response.message)
+            hostname = payload.get("hostname") or service_name.split("/")[1]
+            ip_addresses = payload.get("ip_addresses") or []
+            ros_network_environment = payload.get("ros_network_environment") or {}
+            processes = payload.get("processes", [])
+            for proc in processes:
+                proc["machine"] = proc.get("machine") or hostname
+                proc["machine_ip_addresses"] = (
+                    proc.get("machine_ip_addresses") or ip_addresses
+                )
+                if ros_network_environment:
+                    proc["machine_ros_network_environment"] = (
+                        proc.get("machine_ros_network_environment")
+                        or ros_network_environment
+                    )
+            return processes
+        except Exception as exc:  # noqa: B902
+            Logger.get_logger().log(
+                LoggerLevel.WARNING,
+                f"Failed to call snapshot agent service '{service_name}': {type(exc)} {exc}",
+            )
+            return []
+        finally:
+            destroy_client = getattr(runtime_node, "destroy_client", None)
+            if destroy_client is not None:
+                destroy_client(client)
+
+    def _collect_snapshot_agent_processes(self, node):
+        """Collect process snapshots from all visible snapshot agents."""
+        agent_services = self._discover_snapshot_agent_services(node)
+        if not agent_services:
+            return None
+
+        processes = []
+        for service_name in agent_services:
+            processes.extend(self._call_snapshot_agent(node, service_name))
+
+        Logger.get_logger().log(
+            LoggerLevel.INFO,
+            f"Collected {len(processes)} processes from {len(agent_services)} snapshot agents",
+        )
+        return processes
 
     @staticmethod
     def _normalize_service_type(service_name, service_types):
@@ -274,6 +387,10 @@ class ROSSnapshot:
 
             nodes_list.append(each_node)
 
+        self._log_duplicate_node_names(nodes_list)
+
+        for each_node in nodes_list:
+            node_name = each_node.full_name
             action_servers = get_action_server_info(
                 node=node, remote_node_name=node_name, include_hidden=True
             )
@@ -356,6 +473,22 @@ class ROSSnapshot:
 
         return (actions_dict, nodes_list, services_dict, topics_dict)
 
+    @staticmethod
+    def _log_duplicate_node_names(nodes):
+        """Log duplicate ROS node names before model builders collapse them."""
+        node_name_counts = Counter(node.full_name for node in nodes)
+        for node_name, count in sorted(node_name_counts.items()):
+            if count < 2:
+                continue
+            Logger.get_logger().log(
+                LoggerLevel.ERROR,
+                (
+                    f"Duplicate ROS node name discovered: '{node_name}' appears "
+                    f"{count} times. ROS 2 node names should be unique; snapshot "
+                    "will merge these into one model entry."
+                ),
+            )
+
     def snapshot(self):
         """
         Probe the ROS deployment to populate the ROSModel.
@@ -387,6 +520,7 @@ class ROSSnapshot:
                     "Getting system information from the ROS network ...",
                 )
 
+                agent_processes = self._collect_snapshot_agent_processes(node)
                 system_info = self.collect_system_info(node)
                 Logger.get_logger().log(
                     LoggerLevel.DEBUG,
@@ -403,7 +537,9 @@ class ROSSnapshot:
                     else:
                         topics_list.append((topic_name, None))
 
-                self._ros_model_builder = ROSModelBuilder(topics_list)
+                self._ros_model_builder = ROSModelBuilder(
+                    topics_list, processes=agent_processes
+                )
                 Logger.get_logger().log(
                     LoggerLevel.DEBUG, "Collect ROS Computation Graph information..."
                 )
@@ -1186,7 +1322,9 @@ class ROSSnapshot:
 
         :param node: StrategyNode Object
         """
-        Logger.get_logger().log(LoggerLevel.INFO, "Collecting parameter information ...")
+        Logger.get_logger().log(
+            LoggerLevel.INFO, "Collecting parameter information ..."
+        )
         params = {}
 
         node_names = get_node_names(node=node, include_hidden_nodes=False)

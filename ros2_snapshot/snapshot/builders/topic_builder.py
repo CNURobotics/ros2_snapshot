@@ -73,6 +73,31 @@ class TopicBuilder(_EntityBuilder):
             "depth": qos_profile.depth,
         }
 
+    @staticmethod
+    def _qos_profile_key(qos_profile):
+        """Return a QoS comparison key, ignoring endpoint-local queue depth."""
+        comparable_profile = dict(qos_profile)
+        comparable_profile.pop("depth", None)
+        return str(sorted(comparable_profile.items()))
+
+    @staticmethod
+    def _merge_qos_depth(existing_profile, qos_profile):
+        """Merge depth-only QoS differences into one profile."""
+        existing_depth = existing_profile["depth"]
+        new_depth = qos_profile["depth"]
+        if existing_depth == new_depth:
+            return existing_profile
+
+        if isinstance(existing_depth, list):
+            depths = set(existing_depth)
+        else:
+            depths = {existing_depth}
+        depths.add(new_depth)
+
+        merged_profile = dict(existing_profile)
+        merged_profile["depth"] = sorted(depths)
+        return merged_profile
+
     def _normalize_metadata_values(self, metadata_name, values):
         """Return a deterministic scalar metadata value or an explicit ambiguity marker."""
         if not values:
@@ -97,7 +122,10 @@ class TopicBuilder(_EntityBuilder):
         if not self._qos_profiles:
             return {}
 
-        profiles = [self._qos_profiles[key] for key in sorted(self._qos_profiles)]
+        profiles = sorted(
+            self._qos_profiles.values(),
+            key=lambda profile: str(sorted(profile.items())),
+        )
         if len(profiles) == 1:
             return profiles[0]
 
@@ -114,7 +142,14 @@ class TopicBuilder(_EntityBuilder):
         """Add verbose information to the topic_bank."""
         self._node_name = info.node_name
         qos_profile = self._serialize_qos_profile(info.qos_profile)
-        self._qos_profiles[str(sorted(qos_profile.items()))] = qos_profile
+        qos_profile_key = self._qos_profile_key(qos_profile)
+        existing_profile = self._qos_profiles.get(qos_profile_key)
+        if existing_profile is None:
+            self._qos_profiles[qos_profile_key] = qos_profile
+        else:
+            self._qos_profiles[qos_profile_key] = self._merge_qos_depth(
+                existing_profile, qos_profile
+            )
         self._gid_information = "".join(
             format(byte, "02x") for byte in info.endpoint_gid
         )

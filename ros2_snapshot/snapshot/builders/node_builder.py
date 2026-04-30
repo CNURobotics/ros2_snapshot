@@ -32,6 +32,9 @@ from ros2_snapshot.core.utilities.ros_exe_filter import list_ros_like_processes
 from ros2_snapshot.snapshot.builders.base_builders import _EntityBuilder
 
 
+UNKNOWN_MACHINE = "UNKNOWN MACHINE"
+
+
 class NodeBuilder(_EntityBuilder):
     """
     Define a NodeBuilder.
@@ -43,7 +46,7 @@ class NodeBuilder(_EntityBuilder):
     of extracting a metamodel instance
     """
 
-    def __init__(self, name, processes):
+    def __init__(self, name, processes, unknown_machine_when_unmatched=False):
         """
         Instantiate an instance of the NodeBuilder.
 
@@ -53,6 +56,7 @@ class NodeBuilder(_EntityBuilder):
         """
         super(NodeBuilder, self).__init__(name)
         self._processes = processes
+        self._unknown_machine_when_unmatched = unknown_machine_when_unmatched
 
         self._all_topic_names = {}
         self._topic_names = {"published": {}, "subscribed": {}}
@@ -187,7 +191,16 @@ class NodeBuilder(_EntityBuilder):
 
         :return: machine ID as string
         """
+        if self._process_dict is not None and self._process_dict.get("machine"):
+            return self._process_dict["machine"]
+        if self._unknown_machine_when_unmatched:
+            return UNKNOWN_MACHINE
         return socket.gethostname()
+
+    @property
+    def process_info(self):
+        """Return the matched process metadata for this node, if available."""
+        return self._process_dict or {}
 
     @property
     def executable_file(self):
@@ -217,7 +230,10 @@ class NodeBuilder(_EntityBuilder):
         :return: the ROS Node executable command line
         :rtype: str
         """
-        return " ".join(self._gather_process_info("cmdline"))
+        cmdline = self._gather_process_info("cmdline")
+        if isinstance(cmdline, (list, tuple)):
+            return " ".join(str(arg) for arg in cmdline)
+        return cmdline
 
     @property
     def executable_num_threads(self):
@@ -268,22 +284,43 @@ class NodeBuilder(_EntityBuilder):
         haystack = " ".join(str(arg) for arg in cmdline).lower()
         return "ros2 run" in haystack or "rosrun" in haystack
 
-    def _unique_unassigned_child_pid(self, parent_pid):
-        child_pids = [
-            proc["pid"]
-            for proc in self._processes.values()
-            if proc.get("ppid") == parent_pid and proc.get("assigned") is None
+    def _unique_unassigned_child_key(self, parent_proc):
+        parent_pid = parent_proc.get("pid")
+        parent_machine = parent_proc.get("machine")
+        child_keys = [
+            process_key
+            for process_key, proc in self._processes.items()
+            if (
+                proc.get("ppid") == parent_pid
+                and proc.get("machine") == parent_machine
+                and proc.get("assigned") is None
+            )
         ]
-        if len(child_pids) != 1:
+        if len(child_keys) != 1:
             return None
-        return child_pids[0]
+        return child_keys[0]
+
+    @staticmethod
+    def _same_machine_parent(candidate_proc, parent_proc):
+        return (
+            candidate_proc.get("ppid") == parent_proc.get("pid")
+            and candidate_proc.get("machine") == parent_proc.get("machine")
+        )
+
+    def _candidate_parent_keys(self, possible_procs):
+        return {
+            parent_key
+            for parent_key, parent_proc in possible_procs.items()
+            for proc in possible_procs.values()
+            if self._same_machine_parent(proc, parent_proc)
+        }
 
     def _promote_ros_run_wrappers(self, possible_procs, proc_match_scores):
         for pid, proc in list(possible_procs.items()):
             if not self._is_ros_run_wrapper(proc):
                 continue
 
-            child_pid = self._unique_unassigned_child_pid(pid)
+            child_pid = self._unique_unassigned_child_key(proc)
             if child_pid is None or child_pid not in self._processes:
                 continue
 
@@ -305,7 +342,7 @@ class NodeBuilder(_EntityBuilder):
         possible_procs = {}
         proc_match_scores = {}  # pid -> best node_parts count matched across all cmdline args
         node_parts = node_name.split("_")
-        for proc in self._processes.values():
+        for process_key, proc in self._processes.items():
             cmdline = proc["cmdline"]
             if isinstance(cmdline, list) and cmdline:
                 found_ns = namespace == "/"
@@ -355,8 +392,8 @@ class NodeBuilder(_EntityBuilder):
                         found_name = False
 
                 if found_ns and found_name:
-                    possible_procs[proc["pid"]] = proc
-                    proc_match_scores[proc["pid"]] = best_parts_matched
+                    possible_procs[process_key] = proc
+                    proc_match_scores[process_key] = best_parts_matched
             else:
                 Logger.get_logger().log(LoggerLevel.WARNING, f"Cannot process pid for {cmdline}")
 
@@ -382,16 +419,11 @@ class NodeBuilder(_EntityBuilder):
                     f"\x1b[91mMultiple potential processes for '{node_name}'"
                     f" : {possible_procs.values()}\x1b[0m",
                 )
-                parents_to_remove = set()
+                parents_to_remove = self._candidate_parent_keys(possible_procs)
 
-                for proc in possible_procs.values():
-                    ppid = proc.get("ppid")
-                    if ppid in possible_procs:
-                        parents_to_remove.add(ppid)
-
-                for ppid in parents_to_remove:
+                for parent_key in parents_to_remove:
                     # Remove parent processes and use child process
-                    possible_procs.pop(ppid, None)
+                    possible_procs.pop(parent_key, None)
 
                 previously_assigned = set()
                 for pid, proc in possible_procs.items():
@@ -438,10 +470,11 @@ class NodeBuilder(_EntityBuilder):
 
             return pid
         else:
+            level = LoggerLevel.WARNING if guess else LoggerLevel.DEBUG
             Logger.get_logger().log(
-                LoggerLevel.WARNING,
-                f"\033[1;31m    Failed to find process pid for '{node_name}'!\033[0m\n"
-                f"{self._processes}",
+                level,
+                f"Failed to find process pid for '{node_name}' "
+                f"among {len(self._processes)} candidate processes.",
             )
             return None
 
@@ -489,7 +522,7 @@ class NodeBuilder(_EntityBuilder):
                             f"{type(exc)} returncode={exc.returncode} output={exc.output}",
                         )
 
-                    if process_id > 0:
+                    if process_id is not None and process_id in self._processes:
                         # dictionary should be set in get_node_pid call
                         assert (
                             self._process_dict is self._processes[process_id]
@@ -508,8 +541,12 @@ class NodeBuilder(_EntityBuilder):
 
                     self._process_dict = {}
             if key == "cpu_percent" and self._process_dict["cpu_percent"] is None:
-                Logger.get_logger().log(LoggerLevel.DEBUG, f"setting cpu percent for '{self.name}'")
-                self._process_dict[key] = self._process_dict["proc"].cpu_percent(None)
+                process = self._process_dict.get("proc")
+                if process is not None:
+                    Logger.get_logger().log(
+                        LoggerLevel.DEBUG, f"setting cpu percent for '{self.name}'"
+                    )
+                    self._process_dict[key] = process.cpu_percent(None)
             return self._process_dict[key]
         except KeyError:
             # This error is expected if we cannot retrieve the process dictionary

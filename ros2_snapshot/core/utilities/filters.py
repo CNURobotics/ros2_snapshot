@@ -78,6 +78,10 @@ class NodeFilter(Filter):
     BASE_EXCLUSIONS = frozenset({"/roslaunch"})
     DEBUG_EXCLUSIONS = frozenset({"/rosout"})
 
+    def should_filter_out(self, item):
+        """Return True for nodes that should not be modeled."""
+        return super().should_filter_out(item) or item.endswith("/ros2_snapshot_agent")
+
 
 class TopicFilter(Filter):
     """Default filter for Topics."""

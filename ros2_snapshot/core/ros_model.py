@@ -31,9 +31,14 @@ from ros2_snapshot.core.utilities.utility import (
     get_input_file_type,
 )
 
-from graphviz import Digraph
-from graphviz import RequiredArgumentError
-from graphviz.backend import ExecutableNotFound
+try:
+    from graphviz import Digraph
+    from graphviz import RequiredArgumentError
+    from graphviz.backend import ExecutableNotFound
+except ImportError:
+    Digraph = None
+    RequiredArgumentError = None
+    ExecutableNotFound = None
 
 import yaml
 
@@ -360,6 +365,14 @@ class ROSModel:
         :param show_graph: show output when complete
         :return: None
         """
+        if Digraph is None:
+            Logger.get_logger().log(
+                LoggerLevel.ERROR,
+                "Failed to save DOT files for ROS Computation Graph.\n"
+                "             The Graphviz library is not installed.",
+            )
+            return
+
         try:
             Logger.get_logger().log(
                 LoggerLevel.INFO,

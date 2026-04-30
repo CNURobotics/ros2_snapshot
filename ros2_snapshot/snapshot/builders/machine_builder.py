@@ -45,6 +45,13 @@ class MachineBuilder(_EntityBuilder):
         self._ip_address = None
         self._node_names = []
 
+    def set_machine_info(self, *, hostname=None, ip_addresses=None):
+        """Seed machine identity from agent/local process metadata."""
+        if hostname:
+            self._hostname = hostname
+        if ip_addresses:
+            self._ip_address = ip_addresses[0]
+
     @property
     def hostname(self):
         """
@@ -53,7 +60,9 @@ class MachineBuilder(_EntityBuilder):
         :return: hostname on network
         :rtype: str
         """
-        return socket.gethostname()
+        if self._hostname is None:
+            self._gather_hostname_ip()
+        return self._hostname
 
     @property
     def ip_address(self):
@@ -63,7 +72,9 @@ class MachineBuilder(_EntityBuilder):
         :return: ip address of machine
         :rtype: str
         """
-        return socket.gethostbyname(self.hostname)
+        if self._ip_address is None:
+            self._gather_hostname_ip()
+        return self._ip_address
 
     def _gather_hostname_ip(self):
         """
@@ -148,6 +159,10 @@ class MachineBuilder(_EntityBuilder):
         :type kwargs: dict{param: value}
         """
         self.add_node_name(kwargs["node_name"])
+        self.set_machine_info(
+            hostname=kwargs.get("hostname"),
+            ip_addresses=kwargs.get("ip_addresses"),
+        )
 
     def extract_metamodel(self):
         """

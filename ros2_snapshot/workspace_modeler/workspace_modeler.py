@@ -263,21 +263,28 @@ class PackageModeler(object):
 
         for pkg_name, pkg_path in ros_packages.items():
 
-            pkg_data = self._share_instance(pkg_name, pkg_path)
-            if pkg_data is not None:
-                self._num += 1
+            try:
+                pkg_data = self._share_instance(pkg_name, pkg_path)
+                if pkg_data is not None:
+                    self._num += 1
 
-                # Get executable data and parameters from lib path
-                self._lib_instance(pkg_name, pkg_path)
+                    # Get executable data and parameters from lib path
+                    self._lib_instance(pkg_name, pkg_path)
 
-                # Get package specs from share folder
-                self._collect_package_specs(
-                    pkg_name, pkg_data.share_path, pkg_data, None
+                    # Get package specs from share folder
+                    self._collect_package_specs(
+                        pkg_name, pkg_data.share_path, pkg_data, None
+                    )
+                    for key, value in data_counts.items():
+                        if isinstance(getattr(pkg_data, key), list):
+                            cnt = len(getattr(pkg_data, key))
+                            data_counts[key] += cnt
+            except FileNotFoundError as exc:
+                Logger.get_logger().log(
+                    LoggerLevel.WARNING,
+                    f"Did not find expected path for '{pkg_name}' "
+                    f"at '{pkg_path}' - skipping package: {type(exc).__name__} {exc}",
                 )
-                for key, value in data_counts.items():
-                    if isinstance(getattr(pkg_data, key), list):
-                        cnt = len(getattr(pkg_data, key))
-                        data_counts[key] += cnt
 
     def _get_installed_version(self, pkg_name):
         """Get the installed version of package."""

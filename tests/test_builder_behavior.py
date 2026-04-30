@@ -16,7 +16,9 @@ from types import SimpleNamespace
 
 from ros2_snapshot.core import metamodels
 from ros2_snapshot.snapshot.builders.action_builder import ActionBuilder
-from ros2_snapshot.snapshot.builders.node_builder import NodeBuilder
+from ros2_snapshot.snapshot.builders.machine_bank_builder import MachineBankBuilder
+from ros2_snapshot.snapshot.builders.machine_builder import MachineBuilder
+from ros2_snapshot.snapshot.builders.node_builder import NodeBuilder, UNKNOWN_MACHINE
 from ros2_snapshot.snapshot.builders.topic_bank_builder import TopicBankBuilder
 from ros2_snapshot.snapshot.builders.topic_builder import TopicBuilder
 from ros2_snapshot.snapshot import snapshot as snapshot_module
@@ -30,7 +32,9 @@ def patch_process_lookup(monkeypatch):
 
 
 def reset_filters(monkeypatch):
-    monkeypatch.setattr(snapshot_module.filters.NodeFilter, "_runtime_exclusions", set())
+    monkeypatch.setattr(
+        snapshot_module.filters.NodeFilter, "_runtime_exclusions", set()
+    )
     monkeypatch.setattr(snapshot_module.filters.NodeFilter, "INSTANCE", None)
     monkeypatch.setattr(snapshot_module.filters.TopicFilter, "INSTANCE", None)
     monkeypatch.setattr(snapshot_module.filters.ServiceTypeFilter, "INSTANCE", None)
@@ -56,8 +60,9 @@ def build_process(
     exe,
     cmdline,
     assigned=None,
+    machine=None,
 ):
-    return {
+    proc = {
         "pid": pid,
         "ppid": ppid,
         "exe": exe,
@@ -70,6 +75,10 @@ def build_process(
         "assigned": assigned,
         "proc": SimpleNamespace(cpu_percent=lambda _interval=None: 0.0),
     }
+    if machine is not None:
+        proc["machine"] = machine
+        proc["process_key"] = f"{machine}:{pid}"
+    return proc
 
 
 def make_topic_endpoint(
@@ -168,6 +177,35 @@ def test_topic_builder_marks_ambiguous_verbose_metadata_explicitly(monkeypatch):
                 "reliability": "BEST_EFFORT",
             },
         ]
+    }
+
+
+def test_topic_builder_merges_depth_only_qos_differences(monkeypatch):
+    reset_filters(monkeypatch)
+
+    topic_builder = TopicBuilder("/flexbe/start_behavior")
+    topic_builder.construct_type = "flexbe_msgs/msg/BehaviorSelection"
+    gid_dict = {}
+    topic_builder.get_verbose_info(
+        make_topic_endpoint(depth=100),
+        gid_dict,
+    )
+    topic_builder.get_verbose_info(
+        make_topic_endpoint(depth=10),
+        gid_dict,
+    )
+
+    topic_model = topic_builder.extract_metamodel()
+
+    assert topic_model.qos_profile == {
+        "deadline": "0",
+        "depth": [10, 100],
+        "durability": "VOLATILE",
+        "history": "KEEP_LAST",
+        "lifespan": "0",
+        "liveliness": "AUTOMATIC",
+        "liveliness_lease_duration": "0",
+        "reliability": "RELIABLE",
     }
 
 
@@ -327,6 +365,182 @@ def test_node_builder_promotes_ros2_run_wrapper_to_unique_unmatched_child():
     assert node_builder._process_dict is processes[101]
     assert processes[100]["assigned"] is None
     assert processes[101]["assigned"] == "camera"
+
+
+def test_node_builder_uses_matched_process_machine():
+    processes = {
+        "robot_a:101": build_process(
+            pid=101,
+            name="talker",
+            exe="/opt/demo/talker",
+            cmdline=["/opt/demo/talker"],
+            machine="robot_a",
+        )
+    }
+    node_builder = NodeBuilder("/talker", processes)
+
+    assert node_builder.get_node_pid("/", "talker", guess=True) == "robot_a:101"
+    assert node_builder.machine == "robot_a"
+
+
+def test_node_builder_reports_unknown_machine_for_unmatched_distributed_node():
+    node_builder = NodeBuilder(
+        "/talker",
+        {},
+        unknown_machine_when_unmatched=True,
+    )
+    node_builder._process_dict = {}
+
+    assert node_builder.machine == UNKNOWN_MACHINE
+
+
+def test_node_builder_unmatched_warning_does_not_dump_process_table(caplog):
+    processes = {
+        "robot_a:101": build_process(
+            pid=101,
+            name="talker",
+            exe="/opt/demo/talker",
+            cmdline=["/opt/demo/talker"],
+            machine="robot_a",
+        )
+    }
+    node_builder = NodeBuilder("/listener", processes)
+
+    with caplog.at_level(snapshot_module.LoggerLevel.WARNING):
+        pid = node_builder.get_node_pid("/", "listener", guess=True)
+
+    assert pid is None
+    assert "among 1 candidate processes" in caplog.text
+    assert "robot_a:101" not in caplog.text
+
+
+def test_node_builder_returns_unknown_cmdline_without_character_spacing():
+    node_builder = NodeBuilder("/talker", {})
+    node_builder._process_dict = {}
+
+    assert node_builder.executable_cmdline == "Unknown 'cmdline' for '/talker'"
+
+
+def test_machine_builder_resolves_name_from_machine_identity(monkeypatch):
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.machine_builder.socket.gethostbyname",
+        lambda hostname: "192.0.2.10" if hostname == "robot_a" else "127.0.0.1",
+    )
+    machine_builder = MachineBuilder("robot_a")
+    machine_builder.prepare(node_name="/talker")
+
+    machine = machine_builder.extract_metamodel()
+
+    assert machine.name == "robot_a"
+    assert machine.hostname == "robot_a"
+    assert machine.ip_address == "192.0.2.10"
+    assert machine.node_names == ["/talker"]
+
+
+def test_machine_builder_prefers_process_machine_ip_metadata():
+    machine_builder = MachineBuilder("robot_a")
+
+    machine_builder.prepare(
+        node_name="/talker",
+        hostname="robot_a",
+        ip_addresses=["192.0.2.20"],
+    )
+    machine = machine_builder.extract_metamodel()
+
+    assert machine.hostname == "robot_a"
+    assert machine.ip_address == "192.0.2.20"
+
+
+def test_machine_bank_builder_prefers_addresses_on_shared_machine_subnet():
+    machine_bank_builder = MachineBankBuilder()
+    node_builders = SimpleNamespace(
+        names_to_entity_builders={
+            "/local_node": SimpleNamespace(
+                name="/local_node",
+                machine="local_host",
+                process_info={
+                    "machine": "local_host",
+                    "machine_ip_addresses": ["10.124.41.218", "10.126.17.136"],
+                },
+            ),
+            "/remote_node": SimpleNamespace(
+                name="/remote_node",
+                machine="remote_host",
+                process_info={
+                    "machine": "remote_host",
+                    "machine_ip_addresses": ["10.124.43.91", "10.126.17.10"],
+                },
+            ),
+        }
+    )
+
+    machine_bank_builder.prepare(node_builders=node_builders)
+
+    local_machine = machine_bank_builder["local_host"].extract_metamodel()
+    remote_machine = machine_bank_builder["remote_host"].extract_metamodel()
+    assert local_machine.ip_address == "10.126.17.136"
+    assert remote_machine.ip_address == "10.126.17.10"
+
+
+def test_machine_bank_builder_prefers_ros_network_environment_ip_hints():
+    machine_bank_builder = MachineBankBuilder()
+    node_builders = SimpleNamespace(
+        names_to_entity_builders={
+            "/local_node": SimpleNamespace(
+                name="/local_node",
+                machine="local_host",
+                process_info={
+                    "machine": "local_host",
+                    "machine_ip_addresses": ["10.124.41.218", "10.126.17.136"],
+                    "machine_ros_network_environment": {
+                        "ROS_DISCOVERY_SERVER": "10.126.17.131:11811"
+                    },
+                },
+            ),
+            "/remote_node": SimpleNamespace(
+                name="/remote_node",
+                machine="remote_host",
+                process_info={
+                    "machine": "remote_host",
+                    "machine_ip_addresses": ["10.124.43.91", "10.126.17.10"],
+                    "machine_ros_network_environment": {
+                        "CYCLONEDDS_URI": '<Peer Address="10.124.43.91"/>'
+                    },
+                },
+            ),
+        }
+    )
+
+    machine_bank_builder.prepare(node_builders=node_builders)
+
+    local_machine = machine_bank_builder["local_host"].extract_metamodel()
+    remote_machine = machine_bank_builder["remote_host"].extract_metamodel()
+    assert local_machine.ip_address == "10.126.17.136"
+    assert remote_machine.ip_address == "10.124.43.91"
+
+
+def test_machine_bank_builder_prefers_ros_network_hint_subnet_for_single_machine():
+    machine_bank_builder = MachineBankBuilder()
+    node_builders = SimpleNamespace(
+        names_to_entity_builders={
+            "/local_node": SimpleNamespace(
+                name="/local_node",
+                machine="local_host",
+                process_info={
+                    "machine": "local_host",
+                    "machine_ip_addresses": ["10.124.41.218", "10.126.17.136"],
+                    "machine_ros_network_environment": {
+                        "ROS_DISCOVERY_SERVER": "10.126.17.131:11811"
+                    },
+                },
+            ),
+        }
+    )
+
+    machine_bank_builder.prepare(node_builders=node_builders)
+
+    local_machine = machine_bank_builder["local_host"].extract_metamodel()
+    assert local_machine.ip_address == "10.126.17.136"
 
 
 def test_node_builder_extracts_component_manager_and_component_models(monkeypatch):
