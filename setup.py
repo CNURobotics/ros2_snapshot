@@ -23,7 +23,7 @@ PACKAGE_NAME = "ros2_snapshot"
 
 setup(
     name=PACKAGE_NAME,
-    version="0.0.6",
+    version="0.0.7",
     packages=find_packages(),
     data_files=[
         (
