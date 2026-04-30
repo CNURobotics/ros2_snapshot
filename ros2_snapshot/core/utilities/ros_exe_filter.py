@@ -19,6 +19,8 @@ import time
 
 import psutil
 
+from ros2_snapshot.core.utilities.logger import Logger, LoggerLevel
+
 # --- Heuristics you can tweak ----------------------------------------------
 
 # Things that are strong "ROS-ish" signals in a cmdline
@@ -233,7 +235,7 @@ def list_ros_like_processes():
             if item:
                 results.append(item)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as exc:
-            print(exc)
+            Logger.get_logger().log(LoggerLevel.WARNING, str(exc))
             pass
 
     # Sort for readability: launch tools first, then by name

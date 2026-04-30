@@ -14,11 +14,6 @@
 
 from types import SimpleNamespace
 
-try:
-    from rclpy.endpoint_info import EndpointTypeEnum
-except ImportError:
-    from rclpy.topic_endpoint_info import TopicEndpointTypeEnum as EndpointTypeEnum
-
 from ros2_snapshot.core import metamodels
 from ros2_snapshot.snapshot.builders.action_builder import ActionBuilder
 from ros2_snapshot.snapshot.builders.node_builder import NodeBuilder
@@ -29,12 +24,13 @@ from ros2_snapshot.snapshot import snapshot as snapshot_module
 
 def patch_process_lookup(monkeypatch):
     monkeypatch.setattr(
-        "ros2_snapshot.snapshot.builders.node_builder.list_ros_like_processes",
+        "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
         lambda: [],
     )
 
 
 def reset_filters(monkeypatch):
+    monkeypatch.setattr(snapshot_module.filters.NodeFilter, "_runtime_exclusions", set())
     monkeypatch.setattr(snapshot_module.filters.NodeFilter, "INSTANCE", None)
     monkeypatch.setattr(snapshot_module.filters.TopicFilter, "INSTANCE", None)
     monkeypatch.setattr(snapshot_module.filters.ServiceTypeFilter, "INSTANCE", None)
@@ -52,8 +48,31 @@ def build_process_dict():
     }
 
 
+def build_process(
+    *,
+    pid,
+    ppid=1,
+    name,
+    exe,
+    cmdline,
+    assigned=None,
+):
+    return {
+        "pid": pid,
+        "ppid": ppid,
+        "exe": exe,
+        "name": name,
+        "cmdline": cmdline,
+        "num_threads": 1,
+        "cpu_percent": None,
+        "memory_percent": 0.0,
+        "memory_info": "rss=1000",
+        "assigned": assigned,
+        "proc": SimpleNamespace(cpu_percent=lambda _interval=None: 0.0),
+    }
+
+
 def make_topic_endpoint(
-    endpoint_type,
     *,
     reliability="RELIABLE",
     depth=10,
@@ -72,7 +91,6 @@ def make_topic_endpoint(
             depth=depth,
         ),
         endpoint_gid=[1, 2, 3, 4],
-        endpoint_type=endpoint_type,
         topic_type_hash=topic_type_hash,
     )
 
@@ -85,7 +103,7 @@ def test_topic_builder_extracts_verbose_topic_metamodel(monkeypatch):
     topic_builder.add_node_name("/talker", "published")
     topic_builder.add_node_name("/listener", "subscribed")
     topic_builder.get_verbose_info(
-        make_topic_endpoint(EndpointTypeEnum.PUBLISHER),
+        make_topic_endpoint(),
         {},
     )
 
@@ -96,7 +114,6 @@ def test_topic_builder_extracts_verbose_topic_metamodel(monkeypatch):
     assert topic_model.publisher_node_names == ["/talker"]
     assert topic_model.subscriber_node_names == ["/listener"]
     assert topic_model.qos_profile["depth"] == 10
-    assert topic_model.endpoint_type == "PUBLISHER"
     assert topic_model.topic_hash == "hash"
 
 
@@ -110,7 +127,6 @@ def test_topic_builder_marks_ambiguous_verbose_metadata_explicitly(monkeypatch):
     gid_dict = {}
     topic_builder.get_verbose_info(
         make_topic_endpoint(
-            EndpointTypeEnum.PUBLISHER,
             reliability="RELIABLE",
             depth=10,
             topic_type_hash="hash-a",
@@ -119,7 +135,6 @@ def test_topic_builder_marks_ambiguous_verbose_metadata_explicitly(monkeypatch):
     )
     topic_builder.get_verbose_info(
         make_topic_endpoint(
-            EndpointTypeEnum.SUBSCRIPTION,
             reliability="BEST_EFFORT",
             depth=5,
             topic_type_hash="hash-b",
@@ -129,7 +144,6 @@ def test_topic_builder_marks_ambiguous_verbose_metadata_explicitly(monkeypatch):
 
     topic_model = topic_builder.extract_metamodel()
 
-    assert topic_model.endpoint_type == "[multiple] PUBLISHER | SUBSCRIPTION"
     assert topic_model.topic_hash == "[multiple] hash-a | hash-b"
     assert topic_model.qos_profile == {
         "[multiple]": [
@@ -230,7 +244,7 @@ def test_node_builder_extract_metamodel_populates_common_fields(monkeypatch):
     )
     monkeypatch.setattr(snapshot_module.filters.ServiceTypeFilter, "INSTANCE", None)
 
-    node_builder = NodeBuilder("/demo_node")
+    node_builder = NodeBuilder("/demo_node", {})
     node_builder._node = "demo_node"
     node_builder._namespace = "/"
     node_builder._process_dict = build_process_dict()
@@ -263,17 +277,69 @@ def test_node_builder_extract_metamodel_populates_common_fields(monkeypatch):
     assert node_model.parameter_names == ["/demo_node/use_sim_time"]
 
 
+def test_node_builder_promotes_ros2_run_wrapper_to_matching_child():
+    processes = {
+        100: build_process(
+            pid=100,
+            name="ros2",
+            exe="/usr/bin/ros2",
+            cmdline=["ros2", "run", "demo_pkg", "talker"],
+        ),
+        101: build_process(
+            pid=101,
+            ppid=100,
+            name="talker",
+            exe="/opt/demo/talker",
+            cmdline=["/opt/demo/talker"],
+        ),
+    }
+    node_builder = NodeBuilder("/talker", processes)
+
+    pid = node_builder.get_node_pid("/", "talker", guess=True)
+
+    assert pid == 101
+    assert node_builder._process_dict is processes[101]
+    assert processes[100]["assigned"] is None
+    assert processes[101]["assigned"] == "talker"
+
+
+def test_node_builder_promotes_ros2_run_wrapper_to_unique_unmatched_child():
+    processes = {
+        100: build_process(
+            pid=100,
+            name="ros2",
+            exe="/usr/bin/ros2",
+            cmdline=["ros2", "run", "demo_pkg", "camera"],
+        ),
+        101: build_process(
+            pid=101,
+            ppid=100,
+            name="python3",
+            exe="/opt/demo/driver_exec",
+            cmdline=["/opt/demo/opaque_runner"],
+        ),
+    }
+    node_builder = NodeBuilder("/camera", processes)
+
+    pid = node_builder.get_node_pid("/", "camera", guess=True)
+
+    assert pid == 101
+    assert node_builder._process_dict is processes[101]
+    assert processes[100]["assigned"] is None
+    assert processes[101]["assigned"] == "camera"
+
+
 def test_node_builder_extracts_component_manager_and_component_models(monkeypatch):
     patch_process_lookup(monkeypatch)
 
-    manager_builder = NodeBuilder("/container")
+    manager_builder = NodeBuilder("/container", {})
     manager_builder._node = "container"
     manager_builder._namespace = "/"
     manager_builder._process_dict = build_process_dict()
     manager_builder.set_manager_yaml(True)
     manager_builder.set_component_list(["/component"])
 
-    component_builder = NodeBuilder("/component")
+    component_builder = NodeBuilder("/component", {})
     component_builder._node = "component"
     component_builder._namespace = "/"
     component_builder._process_dict = build_process_dict()

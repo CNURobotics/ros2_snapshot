@@ -21,6 +21,7 @@ and populating NodeBuilder instances
 
 from ros2_snapshot.core import metamodels
 from ros2_snapshot.core.utilities import filters
+from ros2_snapshot.core.utilities.ros_exe_filter import list_ros_like_processes
 
 from ros2_snapshot.snapshot.builders.base_builders import _BankBuilder
 from ros2_snapshot.snapshot.builders.node_builder import NodeBuilder
@@ -35,6 +36,17 @@ class NodeBankBuilder(_BankBuilder):
     extracting metamodel instances
     """
 
+    def __init__(self):
+        """Load the process list once and share it with all NodeBuilder instances."""
+        super().__init__()
+        procs = list_ros_like_processes()
+        self._processes = {p["pid"]: p for p in procs}
+
+    @property
+    def processes(self):
+        """Return the shared pid→process dict for this snapshot run."""
+        return self._processes
+
     def get_node_builder(self):
         """Get node builder."""
         return NodeBuilder
@@ -48,7 +60,7 @@ class NodeBankBuilder(_BankBuilder):
         :return: the newly created NodeBuilder
         :rtype: NodeBuilder
         """
-        return NodeBuilder(name)
+        return NodeBuilder(name, self._processes)
 
     def _should_filter_out(self, name, entity_builder):
         """

@@ -244,9 +244,8 @@ class ROSModel:
         except IOError as ex:
             Logger.get_logger().log(
                 LoggerLevel.ERROR,
-                "Failed to save human-readable files for ROS Computation Graph.",
+                f"Failed to save human-readable files for ROS Computation Graph: {ex}",
             )
-            print("     ", ex)
 
     def save_model_json_files(self, directory_path, base_file_name):
         """
@@ -299,9 +298,8 @@ class ROSModel:
         except IOError as ex:
             Logger.get_logger().log(
                 LoggerLevel.ERROR,
-                "Failed to save YAML files for ROS Computation Graph.",
+                f"Failed to save JSON files for ROS Computation Graph: {ex}",
             )
-            print("     ", ex)
 
     def save_model_yaml_files(self, directory_path, base_file_name):
         """
@@ -328,9 +326,8 @@ class ROSModel:
         except IOError as ex:
             Logger.get_logger().log(
                 LoggerLevel.ERROR,
-                "Failed to save YAML files for ROS Computation Graph.",
+                f"Failed to save YAML files for ROS Computation Graph: {ex}",
             )
-            print("     ", ex)
 
     def save_model_pickle_files(self, directory_path, base_file_name):
         """
@@ -351,9 +348,8 @@ class ROSModel:
                     pickle.dump(bank, fout)
         except IOError as ex:
             Logger.get_logger().log(
-                LoggerLevel.ERROR, "Failed to save Pickle files for ROS Model."
+                LoggerLevel.ERROR, f"Failed to save Pickle files for ROS Model: {ex}"
             )
-            print("     ", ex)
 
     def save_dot_graph_files(self, directory_path, file_name, show_graph=True):
         """
@@ -402,10 +398,9 @@ class ROSModel:
         except CalledProcessError as ex:
             Logger.get_logger().log(
                 LoggerLevel.ERROR,
-                "Failed to write DOT files for ROS Computation Graph.\n"
-                "             The Graphviz render exit status is non-zero",
+                f"Failed to write DOT files for ROS Computation Graph.\n"
+                f"             The Graphviz render exit status is non-zero: {ex}",
             )
-            print("     ", ex)
 
         except RequiredArgumentError as ex:
             Logger.get_logger().log(

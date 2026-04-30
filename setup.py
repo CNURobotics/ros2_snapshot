@@ -40,13 +40,16 @@ def write_version_file(version: str, out_path: Path) -> None:
 
 HERE = Path(__file__).resolve().parent
 PACKAGE_NAME = "ros2_snapshot"
+
+# Define single point of truth for VERSION to be
+# used by tool when writing data
 VERSION = version_from_package_xml(HERE / "package.xml")
 
 write_version_file(VERSION, HERE / "VERSION")
 
 setup(
     name=PACKAGE_NAME,
-    version="0.0.6",
+    version=VERSION,
     packages=find_packages(),
     data_files=[
         (
@@ -59,7 +62,7 @@ setup(
     install_requires=[
         "setuptools",
         "graphviz",
-        "pydantic",
+        "pydantic>=1.10.17,<3",
         "psutil",
         "PyYAML",
     ],

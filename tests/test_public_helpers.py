@@ -19,7 +19,6 @@ from ros2_snapshot.core.ros_model import BankType, ROSModel
 from ros2_snapshot.core.specifications.package_specification import (
     PackageSpecificationBank,
 )
-from ros2_snapshot.snapshot.builders.node_builder import NodeBuilder
 from ros2_snapshot.snapshot.snapshot import ROSSnapshot
 
 
@@ -54,26 +53,16 @@ def test_snapshot_package_specification_bank_uses_package_specification_type():
     assert snapshot.package_specification_bank is package_bank
 
 
-def test_snapshot_resets_cached_node_processes_before_probing(monkeypatch):
+def test_node_bank_builder_loads_fresh_processes_on_each_init(monkeypatch):
     calls = []
-
-    class FailingNodeStrategy:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def __enter__(self):
-            raise RuntimeError("stop after reset")
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(NodeBuilder, "reset_processes", lambda: calls.append("reset"))
     monkeypatch.setattr(
-        "ros2_snapshot.snapshot.snapshot.NodeStrategy",
-        FailingNodeStrategy,
+        "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
+        lambda: calls.append("loaded") or [],
     )
 
-    with pytest.raises(RuntimeError, match="stop after reset"):
-        ROSSnapshot().snapshot()
+    from ros2_snapshot.snapshot.builders.node_bank_builder import NodeBankBuilder
 
-    assert calls == ["reset"]
+    NodeBankBuilder()
+    NodeBankBuilder()
+
+    assert calls == ["loaded", "loaded"]
