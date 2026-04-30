@@ -85,7 +85,10 @@ def test_collect_system_info_logs_duplicate_node_names(monkeypatch, caplog):
         _, nodes, _, _ = ros_snapshot.collect_system_info(node=object())
 
     assert nodes == duplicate_nodes
-    assert "Duplicate ROS node name discovered: '/duplicate' appears 2 times" in caplog.text
+    assert (
+        "Duplicate ROS node name discovered: '/duplicate' appears 2 times"
+        in caplog.text
+    )
 
 
 def test_collect_services_info_tracks_service_clients_and_providers():

@@ -17,41 +17,74 @@ import json
 import socket
 from types import SimpleNamespace
 
-from ros2_snapshot.snapshot import snapshot_agent as agent_module
+from ros2_snapshot.snapshot import snapshot_remote as remote_module
 from ros2_snapshot.snapshot import snapshot as snapshot_module
 
 
 def test_normalize_hostname_for_namespace():
     assert (
-        agent_module.normalize_hostname_for_namespace("robot-a.local")
+        remote_module.normalize_hostname_for_namespace("robot-a.local")
         == "robot_a_local"
     )
-    assert agent_module.normalize_hostname_for_namespace("7bot") == "host_7bot"
+    assert remote_module.normalize_hostname_for_namespace("7bot") == "host_7bot"
 
 
-def test_agent_service_name_uses_namespace_scoped_service_path():
+def test_remote_service_name_uses_namespace_scoped_service_path():
     assert (
-        agent_module.agent_service_name("/robot_a") == "/robot_a/get_process_snapshot"
+        remote_module.remote_service_name("/robot_a") == "/robot_a/get_process_snapshot"
     )
-    assert agent_module.agent_service_name("robot_a") == "/robot_a/get_process_snapshot"
-
-
-def test_snapshot_agent_node_name_from_namespace_scoped_service():
     assert (
-        snapshot_module.ROSSnapshot._snapshot_agent_node_name(
+        remote_module.remote_service_name("robot_a") == "/robot_a/get_process_snapshot"
+    )
+
+
+def test_remote_options_preserve_ros_arguments():
+    options = remote_module.get_options(
+        [
+            "--hostname",
+            "robot_a",
+            "--ros-args",
+            "-r",
+            "__ns:=/robot_a",
+        ]
+    )
+
+    assert options.hostname == "robot_a"
+    assert options.ros_args == ["--ros-args", "-r", "__ns:=/robot_a"]
+
+
+def test_snapshot_remote_node_name_from_namespace_scoped_service():
+    assert (
+        snapshot_module.ROSSnapshot._snapshot_remote_node_name(
             "/robot_a/get_process_snapshot"
         )
-        == "/robot_a/ros2_snapshot_agent"
+        == "/robot_a/ros2_snapshot_remote"
     )
     assert (
-        snapshot_module.ROSSnapshot._snapshot_agent_node_name(
-            "/robot_a/ros2_snapshot_agent/get_process_snapshot"
+        snapshot_module.ROSSnapshot._snapshot_remote_node_name(
+            "/robot_a/ros2_snapshot_remote/get_process_snapshot"
         )
-        == "/robot_a/ros2_snapshot_agent"
+        == "/robot_a/ros2_snapshot_remote"
     )
 
 
-def test_serialize_process_returns_json_safe_agent_record():
+def test_snapshot_remote_machine_name_uses_service_namespace():
+    assert (
+        snapshot_module.ROSSnapshot._snapshot_remote_machine_name(
+            "/robot_a/get_process_snapshot", "cloned-host"
+        )
+        == "robot_a"
+    )
+    assert (
+        snapshot_module.ROSSnapshot._snapshot_remote_machine_name(
+            "/fleet/robot_a/ros2_snapshot_remote/get_process_snapshot",
+            "cloned-host",
+        )
+        == "fleet:robot_a"
+    )
+
+
+def test_serialize_process_returns_json_safe_remote_record():
     process = {
         "pid": 10,
         "ppid": 1,
@@ -66,7 +99,7 @@ def test_serialize_process_returns_json_safe_agent_record():
         "cpu_percent": None,
     }
 
-    serialized = agent_module.serialize_process(process, "robot_a")
+    serialized = remote_module.serialize_process(process, "robot_a")
 
     json.dumps(serialized)
     assert serialized["machine"] == "robot_a"
@@ -97,17 +130,17 @@ def test_process_snapshot_payload_samples_cpu_percent(monkeypatch):
         "proc": Process(),
     }
     monkeypatch.setattr(
-        agent_module,
+        remote_module,
         "list_ros_like_processes",
         lambda prime_cpu=True: [process],
     )
     monkeypatch.setattr(
-        agent_module.time,
+        remote_module.time,
         "sleep",
         lambda delay: sleeps.append(delay),
     )
 
-    payload = agent_module.build_process_snapshot_payload(
+    payload = remote_module.build_process_snapshot_payload(
         "robot_a",
         ["192.0.2.10"],
         cpu_sample_delay_sec=0.25,
@@ -120,17 +153,17 @@ def test_process_snapshot_payload_samples_cpu_percent(monkeypatch):
 
 def test_process_snapshot_payload_includes_ros_network_environment(monkeypatch):
     monkeypatch.setattr(
-        agent_module,
+        remote_module,
         "list_ros_like_processes",
         lambda prime_cpu=True: [],
     )
-    for key in agent_module.ROS_NETWORK_ENVIRONMENT_KEYS:
+    for key in remote_module.ROS_NETWORK_ENVIRONMENT_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("ROS_DOMAIN_ID", "96")
     monkeypatch.setenv("RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp")
     monkeypatch.setenv("ROS_PACKAGE_PATH", "/opt/ros/demo")
 
-    payload = agent_module.build_process_snapshot_payload(
+    payload = remote_module.build_process_snapshot_payload(
         "robot_a",
         ["10.126.17.10"],
         cpu_sample_delay_sec=0,
@@ -140,6 +173,32 @@ def test_process_snapshot_payload_includes_ros_network_environment(monkeypatch):
         "ROS_DOMAIN_ID": "96",
         "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
     }
+    assert payload["ros_network_address_hints"] == []
+
+
+def test_process_snapshot_payload_includes_resolved_ros_network_address_hints(
+    monkeypatch,
+    tmp_path,
+):
+    config_path = tmp_path / "cyclonedds.xml"
+    config_path.write_text('<Peer Address="10.126.17.131"/>')
+    monkeypatch.setattr(
+        remote_module,
+        "list_ros_like_processes",
+        lambda prime_cpu=True: [],
+    )
+    for key in remote_module.ROS_NETWORK_ENVIRONMENT_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CYCLONEDDS_URI", str(config_path))
+
+    payload = remote_module.build_process_snapshot_payload(
+        "robot_a",
+        ["10.126.17.10"],
+        cpu_sample_delay_sec=0,
+    )
+
+    assert payload["ros_network_environment"] == {"CYCLONEDDS_URI": str(config_path)}
+    assert payload["ros_network_address_hints"] == ["10.126.17.131"]
 
 
 def test_process_snapshot_payload_skips_cpu_percent_when_delay_is_zero(monkeypatch):
@@ -163,17 +222,17 @@ def test_process_snapshot_payload_skips_cpu_percent_when_delay_is_zero(monkeypat
             raise AssertionError("cpu percent should not be sampled")
 
     monkeypatch.setattr(
-        agent_module.psutil,
+        remote_module.psutil,
         "process_iter",
         lambda attrs=None: [Process()],
     )
     monkeypatch.setattr(
-        agent_module.time,
+        remote_module.time,
         "sleep",
         lambda delay: sleeps.append(delay),
     )
 
-    payload = agent_module.build_process_snapshot_payload(
+    payload = remote_module.build_process_snapshot_payload(
         "robot_a",
         ["192.0.2.10"],
         cpu_sample_delay_sec=0,
@@ -184,7 +243,7 @@ def test_process_snapshot_payload_skips_cpu_percent_when_delay_is_zero(monkeypat
     assert "proc" not in payload["processes"][0]
 
 
-def test_agent_classify_process_drops_ros_daemon_and_site_packages_only_processes():
+def test_remote_classify_process_drops_ros_daemon_and_site_packages_only_processes():
     class Process:
         def __init__(self, *, name, cmdline, exe):
             self.info = {
@@ -227,45 +286,65 @@ def test_agent_classify_process_drops_ros_daemon_and_site_packages_only_processe
         "QtWebEngineProcess",
     )
 
-    assert agent_module.classify_process(ros_daemon) is None
-    assert agent_module.classify_process(qt_process) is None
+    assert remote_module.classify_process(ros_daemon) is None
+    assert remote_module.classify_process(qt_process) is None
 
 
-def test_agent_reports_when_contacted(monkeypatch, capsys):
+def test_remote_reports_when_contacted(monkeypatch):
     payload = {
         "hostname": "robot_a",
+        "machine_id": "machine-id-a",
         "ip_addresses": ["192.0.2.10"],
-        "processes": [{"pid": 10}, {"pid": 11}],
+        "ros_domain_id": "42",
+        "rmw_implementation": "rmw_cyclonedds_cpp",
+        "ros_network_address_hints": ["192.0.2.20"],
+        "processes": [
+            {"pid": 10, "name": "talker", "reason": "ros-token"},
+            {"pid": 11, "name": "listener"},
+        ],
     }
     monkeypatch.setattr(
-        agent_module,
+        remote_module,
         "build_process_snapshot_payload",
         lambda hostname, ip_addresses, cpu_sample_delay_sec=0.0: payload,
     )
 
-    agent = object.__new__(agent_module.SnapshotAgent)
-    agent.hostname = "robot_a"
-    agent.ip_addresses = ["192.0.2.10"]
-    agent.cpu_sample_delay_sec = 0.0
+    logged = []
+    debug_logged = []
+    remote = object.__new__(remote_module.SnapshotRemote)
+    remote.hostname = "robot_a"
+    remote.ip_addresses = ["192.0.2.10"]
+    remote.cpu_sample_delay_sec = 0.0
+    remote.get_logger = lambda: SimpleNamespace(
+        info=logged.append,
+        debug=debug_logged.append,
+    )
     response = SimpleNamespace(success=False, message="")
 
-    result = agent.get_process_snapshot(None, response)
+    result = remote.get_process_snapshot(None, response)
 
-    captured = capsys.readouterr()
     assert result is response
     assert response.success is True
     assert json.loads(response.message) == payload
     assert (
-        "ros2_snapshot agent contacted; returned 2 processes from 'robot_a'"
-        in captured.out
+        "ros2_snapshot remote contacted; returned 2 processes from 'robot_a'"
+        in logged[0]
     )
+    assert "machine_id: machine-id-a" in logged[0]
+    assert "addresses: 192.0.2.10" in logged[0]
+    assert "ros_domain_id: 42" in logged[0]
+    assert "rmw_implementation: rmw_cyclonedds_cpp" in logged[0]
+    assert "address_hints: 192.0.2.20" in logged[0]
+    assert "processes: 10:talker(ros-token), 11:listener" in logged[0]
+    assert "hostname: robot_a" not in logged[0]
+    assert "hostname: robot_a" in debug_logged[0]
 
 
-def test_agent_get_ip_addresses_prefers_interface_addresses_over_loopback_hostname(
+def test_remote_get_ip_addresses_prefers_interface_addresses_over_loopback_hostname(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        agent_module.psutil,
+        remote_module.psutil,
         "net_if_addrs",
         lambda: {
             "lo": [SimpleNamespace(family=socket.AF_INET, address="127.0.0.1")],
@@ -273,24 +352,24 @@ def test_agent_get_ip_addresses_prefers_interface_addresses_over_loopback_hostna
         },
     )
     monkeypatch.setattr(
-        agent_module.socket,
+        remote_module.socket,
         "getaddrinfo",
         lambda hostname, port: [(socket.AF_INET, None, None, None, ("127.0.1.1", 0))],
     )
     monkeypatch.setattr(
-        agent_module.socket,
+        remote_module.socket,
         "gethostbyname",
         lambda hostname: "127.0.1.1",
     )
 
-    addresses = agent_module.get_ip_addresses("robot_a")
+    addresses = remote_module.get_ip_addresses("robot_a")
 
     assert addresses[0] == "192.0.2.40"
     assert "127.0.0.1" not in addresses
     assert "127.0.1.1" not in addresses
 
 
-def test_agent_get_ip_addresses_prefers_ros_network_address_hints(
+def test_remote_get_ip_addresses_prefers_ros_network_address_hints(
     monkeypatch, tmp_path
 ):
     config_path = tmp_path / "cyclonedds.xml"
@@ -301,7 +380,7 @@ def test_agent_get_ip_addresses_prefers_ros_network_address_hints(
     )
     monkeypatch.setenv("CYCLONEDDS_URI", str(config_path))
     monkeypatch.setattr(
-        agent_module.psutil,
+        remote_module.psutil,
         "net_if_addrs",
         lambda: {
             "eth0": [SimpleNamespace(family=socket.AF_INET, address="10.124.43.91")],
@@ -309,22 +388,22 @@ def test_agent_get_ip_addresses_prefers_ros_network_address_hints(
         },
     )
     monkeypatch.setattr(
-        agent_module.socket,
+        remote_module.socket,
         "getaddrinfo",
         lambda hostname, port: [],
     )
     monkeypatch.setattr(
-        agent_module.socket,
+        remote_module.socket,
         "gethostbyname",
         lambda hostname: "127.0.1.1",
     )
 
-    addresses = agent_module.get_ip_addresses("robot_a")
+    addresses = remote_module.get_ip_addresses("robot_a")
 
     assert addresses == ["10.126.17.10", "10.124.43.91"]
 
 
-def test_snapshot_discovers_and_calls_agent_services(monkeypatch):
+def test_snapshot_discovers_and_calls_remote_services(monkeypatch):
     monkeypatch.setattr(
         snapshot_module.filters.NodeFilter, "_runtime_exclusions", set()
     )
@@ -333,6 +412,7 @@ def test_snapshot_discovers_and_calls_agent_services(monkeypatch):
         "hostname": "robot_a",
         "ip_addresses": ["192.0.2.10"],
         "ros_network_environment": {"CYCLONEDDS_URI": "10.126.17.10"},
+        "ros_network_address_hints": ["10.126.17.10"],
         "processes": [
             {
                 "pid": 10,
@@ -388,7 +468,7 @@ def test_snapshot_discovers_and_calls_agent_services(monkeypatch):
     runtime_node = RuntimeNode()
     ros_snapshot = snapshot_module.ROSSnapshot()
 
-    processes = ros_snapshot._collect_snapshot_agent_processes(runtime_node)
+    processes = ros_snapshot._collect_snapshot_remote_processes(runtime_node)
 
     assert processes == [
         {
@@ -399,12 +479,14 @@ def test_snapshot_discovers_and_calls_agent_services(monkeypatch):
             "cmdline": ["/opt/demo/talker"],
             "assigned": None,
             "machine": "robot_a",
+            "machine_hostname": "robot_a",
             "machine_ip_addresses": ["192.0.2.10"],
             "machine_ros_network_environment": {"CYCLONEDDS_URI": "10.126.17.10"},
+            "machine_ros_network_address_hints": ["10.126.17.10"],
         }
     ]
     assert (
-        "/robot_a/ros2_snapshot_agent"
+        "/robot_a/ros2_snapshot_remote"
         in snapshot_module.filters.NodeFilter._runtime_exclusions
     )
     assert len(runtime_node.destroyed) == 1

@@ -127,7 +127,8 @@ class NodeBuilder(_EntityBuilder):
         # Intial attempt to find PID
         if self.get_node_pid(self._namespace, self.node, guess=False) is None:
             Logger.get_logger().log(
-                LoggerLevel.DEBUG, "    No definitive matching for process ID on first pass"
+                LoggerLevel.DEBUG,
+                "    No definitive matching for process ID on first pass",
             )
 
     def prepare(self, **kwargs):
@@ -178,7 +179,8 @@ class NodeBuilder(_EntityBuilder):
         :param name: package/node name
         """
         Logger.get_logger().log(
-            LoggerLevel.DEBUG, f"Updating node '{self._name}' from '{self._node}' to '{name}'!"
+            LoggerLevel.DEBUG,
+            f"Updating node '{self._name}' from '{self._node}' to '{name}'!",
         )
         self._node = name
 
@@ -302,10 +304,9 @@ class NodeBuilder(_EntityBuilder):
 
     @staticmethod
     def _same_machine_parent(candidate_proc, parent_proc):
-        return (
-            candidate_proc.get("ppid") == parent_proc.get("pid")
-            and candidate_proc.get("machine") == parent_proc.get("machine")
-        )
+        return candidate_proc.get("ppid") == parent_proc.get(
+            "pid"
+        ) and candidate_proc.get("machine") == parent_proc.get("machine")
 
     def _candidate_parent_keys(self, possible_procs):
         return {
@@ -340,7 +341,9 @@ class NodeBuilder(_EntityBuilder):
         :rtype: int
         """
         possible_procs = {}
-        proc_match_scores = {}  # pid -> best node_parts count matched across all cmdline args
+        proc_match_scores = (
+            {}
+        )  # pid -> best node_parts count matched across all cmdline args
         node_parts = node_name.split("_")
         for process_key, proc in self._processes.items():
             cmdline = proc["cmdline"]
@@ -384,18 +387,25 @@ class NodeBuilder(_EntityBuilder):
                                 # print(f"  Matching '{node_parts}' in '{cmd_parts}'"
                                 #       f" for '{node_name}' in {cmd} ({parts_match}, {cmd_match})")
                                 found_name = True
-                                best_parts_matched = max(best_parts_matched, len(parts_match))
+                                best_parts_matched = max(
+                                    best_parts_matched, len(parts_match)
+                                )
 
                     # If the process explicitly remapped to a different node name,
                     # override any fuzzy/substring match — this process is not for node_name.
-                    if explicit_node_remap is not None and explicit_node_remap != node_name:
+                    if (
+                        explicit_node_remap is not None
+                        and explicit_node_remap != node_name
+                    ):
                         found_name = False
 
                 if found_ns and found_name:
                     possible_procs[process_key] = proc
                     proc_match_scores[process_key] = best_parts_matched
             else:
-                Logger.get_logger().log(LoggerLevel.WARNING, f"Cannot process pid for {cmdline}")
+                Logger.get_logger().log(
+                    LoggerLevel.WARNING, f"Cannot process pid for {cmdline}"
+                )
 
         self._promote_ros_run_wrappers(possible_procs, proc_match_scores)
 
@@ -403,7 +413,9 @@ class NodeBuilder(_EntityBuilder):
         # than the best candidate before attempting further disambiguation.
         if len(possible_procs) > 1:
             max_score = max(proc_match_scores.values())
-            weaker = [pid for pid, score in proc_match_scores.items() if score < max_score]
+            weaker = [
+                pid for pid, score in proc_match_scores.items() if score < max_score
+            ]
             for pid in weaker:
                 possible_procs.pop(pid)
                 proc_match_scores.pop(pid)
@@ -450,7 +462,9 @@ class NodeBuilder(_EntityBuilder):
                         f"\x1b[91mMultiple potential processes remain for '{node_name}' : {possible_procs.values()}\x1b[0m",
                     )
                     if not guess:
-                        Logger.get_logger().log(LoggerLevel.DEBUG, "    Do not choose for now!")
+                        Logger.get_logger().log(
+                            LoggerLevel.DEBUG, "    Do not choose for now!"
+                        )
                         return None  # Do not choose for now
 
                 pid = list(possible_procs.keys())[0]  # Get one of remaining choices
@@ -465,7 +479,9 @@ class NodeBuilder(_EntityBuilder):
                     "/".join([namespace, node_name]) if namespace != "/" else node_name
                 )
 
-            Logger.get_logger().log(LoggerLevel.DEBUG, f"    Found process pid {pid} for '{node_name}'")
+            Logger.get_logger().log(
+                LoggerLevel.DEBUG, f"    Found process pid {pid} for '{node_name}'"
+            )
             self._process_dict = self._processes[pid]
 
             return pid

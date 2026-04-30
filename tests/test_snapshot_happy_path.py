@@ -60,7 +60,9 @@ class FakeGraphNode:
 
 
 def reset_filters(monkeypatch):
-    monkeypatch.setattr(snapshot_module.filters.NodeFilter, "_runtime_exclusions", set())
+    monkeypatch.setattr(
+        snapshot_module.filters.NodeFilter, "_runtime_exclusions", set()
+    )
     monkeypatch.setattr(snapshot_module.filters.NodeFilter, "INSTANCE", None)
     monkeypatch.setattr(snapshot_module.filters.TopicFilter, "INSTANCE", None)
     monkeypatch.setattr(snapshot_module.filters.ServiceTypeFilter, "INSTANCE", None)

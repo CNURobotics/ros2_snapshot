@@ -179,7 +179,9 @@ class TopicBuilder(_EntityBuilder):
     def topic_hash(self):
         """Get topic hash."""
         if self._topic_hash_cache is _UNSET:
-            self._topic_hash_cache = self._normalize_metadata_values("topic_hash", self._topic_hashes)
+            self._topic_hash_cache = self._normalize_metadata_values(
+                "topic_hash", self._topic_hashes
+            )
         return self._topic_hash_cache
 
     @property

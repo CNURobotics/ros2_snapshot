@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # Copyright 2026 Christopher Newport University
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -80,19 +82,35 @@ class ROSSnapshot:
         self._unmatched_nodes = []
 
     PARAMETER_SERVICE_TIMEOUT_SEC = 2.0
-    SNAPSHOT_AGENT_SERVICE_TYPE = "std_srvs/srv/Trigger"
-    SNAPSHOT_AGENT_SERVICE_SUFFIX = "/get_process_snapshot"
-    SNAPSHOT_AGENT_TIMEOUT_SEC = 1.0
+    SNAPSHOT_REMOTE_SERVICE_TYPE = "std_srvs/srv/Trigger"
+    SNAPSHOT_REMOTE_SERVICE_SUFFIX = "/get_process_snapshot"
+    SNAPSHOT_REMOTE_TIMEOUT_SEC = 1.0
+    SNAPSHOT_REMOTE_NODE_NAME = "ros2_snapshot_remote"
 
     @staticmethod
-    def _snapshot_agent_node_name(service_name):
-        """Return the node name that serves a snapshot-agent service."""
-        service_prefix = service_name[: -len(ROSSnapshot.SNAPSHOT_AGENT_SERVICE_SUFFIX)]
-        if service_prefix.endswith("/ros2_snapshot_agent"):
+    def _snapshot_remote_node_name(service_name):
+        """Return the node name that serves a snapshot-remote service."""
+        service_prefix = service_name[
+            : -len(ROSSnapshot.SNAPSHOT_REMOTE_SERVICE_SUFFIX)
+        ]
+        remote_suffix = f"/{ROSSnapshot.SNAPSHOT_REMOTE_NODE_NAME}"
+        if service_prefix.endswith(remote_suffix):
             return service_prefix
         if service_prefix == "":
-            return "/ros2_snapshot_agent"
-        return f"{service_prefix}/ros2_snapshot_agent"
+            return f"/{ROSSnapshot.SNAPSHOT_REMOTE_NODE_NAME}"
+        return f"{service_prefix}/{ROSSnapshot.SNAPSHOT_REMOTE_NODE_NAME}"
+
+    @staticmethod
+    def _snapshot_remote_machine_name(service_name, hostname):
+        """Return a stable machine key derived from the remote service namespace."""
+        service_prefix = service_name[
+            : -len(ROSSnapshot.SNAPSHOT_REMOTE_SERVICE_SUFFIX)
+        ]
+        suffix = f"/{ROSSnapshot.SNAPSHOT_REMOTE_NODE_NAME}"
+        if service_prefix.endswith(suffix):
+            service_prefix = service_prefix[: -len(suffix)]
+        machine_name = service_prefix.strip("/").replace("/", ":")
+        return machine_name or hostname
 
     @staticmethod
     def _get_direct_runtime_node(node):
@@ -106,49 +124,51 @@ class ROSSnapshot:
         direct_node = getattr(node, "direct_node", None)
         return direct_node if direct_node is not None else node
 
-    def _discover_snapshot_agent_services(self, node):
-        """Return snapshot-agent services visible in the ROS graph."""
+    def _discover_snapshot_remote_services(self, node):
+        """Return snapshot-remote services visible in the ROS graph."""
         runtime_node = self._get_direct_runtime_node(node)
         try:
             services = runtime_node.get_service_names_and_types()
         except Exception as exc:  # noqa: B902
             Logger.get_logger().log(
                 LoggerLevel.WARNING,
-                f"Unable to discover snapshot agent services: {type(exc)} {exc}",
+                f"Unable to discover snapshot remote services: {type(exc)} {exc}",
             )
             return []
 
-        agent_services = []
+        remote_services = []
         for service_name, service_types in services:
-            if not service_name.endswith(self.SNAPSHOT_AGENT_SERVICE_SUFFIX):
+            if not service_name.endswith(self.SNAPSHOT_REMOTE_SERVICE_SUFFIX):
                 continue
-            if self.SNAPSHOT_AGENT_SERVICE_TYPE in service_types:
-                agent_services.append(service_name)
+            if self.SNAPSHOT_REMOTE_SERVICE_TYPE in service_types:
+                remote_services.append(service_name)
                 filters.NodeFilter.add_runtime_exclusion(
-                    self._snapshot_agent_node_name(service_name)
+                    self._snapshot_remote_node_name(service_name)
                 )
-        return sorted(agent_services)
+        return sorted(remote_services)
 
-    def _call_snapshot_agent(self, node, service_name):
-        """Call one snapshot agent and return its process list."""
+    def _call_snapshot_remote(self, node, service_name):
+        """Call one snapshot remote and return its process list."""
         runtime_node = self._get_direct_runtime_node(node)
         client = runtime_node.create_client(Trigger, service_name)
         try:
-            if not client.wait_for_service(timeout_sec=self.SNAPSHOT_AGENT_TIMEOUT_SEC):
+            if not client.wait_for_service(
+                timeout_sec=self.SNAPSHOT_REMOTE_TIMEOUT_SEC
+            ):
                 Logger.get_logger().log(
                     LoggerLevel.WARNING,
-                    f"Timed out waiting for snapshot agent service '{service_name}'",
+                    f"Timed out waiting for snapshot remote service '{service_name}'",
                 )
                 return []
 
             future = client.call_async(Trigger.Request())
             rclpy.spin_until_future_complete(
-                runtime_node, future, timeout_sec=self.SNAPSHOT_AGENT_TIMEOUT_SEC
+                runtime_node, future, timeout_sec=self.SNAPSHOT_REMOTE_TIMEOUT_SEC
             )
             if not future.done():
                 Logger.get_logger().log(
                     LoggerLevel.WARNING,
-                    f"Timed out calling snapshot agent service '{service_name}'",
+                    f"Timed out calling snapshot remote service '{service_name}'",
                 )
                 return []
 
@@ -156,17 +176,28 @@ class ROSSnapshot:
             if response is None or not response.success:
                 Logger.get_logger().log(
                     LoggerLevel.WARNING,
-                    f"Snapshot agent service '{service_name}' returned no data",
+                    f"Snapshot remote service '{service_name}' returned no data",
                 )
                 return []
 
             payload = json.loads(response.message)
             hostname = payload.get("hostname") or service_name.split("/")[1]
+            machine_id = payload.get("machine_id")
+            machine_id_source = payload.get("machine_id_source")
+            machine_name = self._snapshot_remote_machine_name(service_name, hostname)
             ip_addresses = payload.get("ip_addresses") or []
             ros_network_environment = payload.get("ros_network_environment") or {}
+            ros_network_address_hints = payload.get("ros_network_address_hints") or []
             processes = payload.get("processes", [])
             for proc in processes:
-                proc["machine"] = proc.get("machine") or hostname
+                proc["machine"] = machine_name
+                proc["machine_hostname"] = proc.get("machine_hostname") or hostname
+                if machine_id:
+                    proc["machine_id"] = proc.get("machine_id") or machine_id
+                if machine_id_source:
+                    proc["machine_id_source"] = (
+                        proc.get("machine_id_source") or machine_id_source
+                    )
                 proc["machine_ip_addresses"] = (
                     proc.get("machine_ip_addresses") or ip_addresses
                 )
@@ -175,11 +206,15 @@ class ROSSnapshot:
                         proc.get("machine_ros_network_environment")
                         or ros_network_environment
                     )
+                proc["machine_ros_network_address_hints"] = (
+                    proc.get("machine_ros_network_address_hints")
+                    or ros_network_address_hints
+                )
             return processes
         except Exception as exc:  # noqa: B902
             Logger.get_logger().log(
                 LoggerLevel.WARNING,
-                f"Failed to call snapshot agent service '{service_name}': {type(exc)} {exc}",
+                f"Failed to call snapshot remote service '{service_name}': {type(exc)} {exc}",
             )
             return []
         finally:
@@ -187,19 +222,19 @@ class ROSSnapshot:
             if destroy_client is not None:
                 destroy_client(client)
 
-    def _collect_snapshot_agent_processes(self, node):
-        """Collect process snapshots from all visible snapshot agents."""
-        agent_services = self._discover_snapshot_agent_services(node)
-        if not agent_services:
+    def _collect_snapshot_remote_processes(self, node):
+        """Collect process snapshots from all visible snapshot remotes."""
+        remote_services = self._discover_snapshot_remote_services(node)
+        if not remote_services:
             return None
 
         processes = []
-        for service_name in agent_services:
-            processes.extend(self._call_snapshot_agent(node, service_name))
+        for service_name in remote_services:
+            processes.extend(self._call_snapshot_remote(node, service_name))
 
         Logger.get_logger().log(
             LoggerLevel.INFO,
-            f"Collected {len(processes)} processes from {len(agent_services)} snapshot agents",
+            f"Collected {len(processes)} processes from {len(remote_services)} snapshot remotes",
         )
         return processes
 
@@ -520,7 +555,7 @@ class ROSSnapshot:
                     "Getting system information from the ROS network ...",
                 )
 
-                agent_processes = self._collect_snapshot_agent_processes(node)
+                remote_processes = self._collect_snapshot_remote_processes(node)
                 system_info = self.collect_system_info(node)
                 Logger.get_logger().log(
                     LoggerLevel.DEBUG,
@@ -538,7 +573,7 @@ class ROSSnapshot:
                         topics_list.append((topic_name, None))
 
                 self._ros_model_builder = ROSModelBuilder(
-                    topics_list, processes=agent_processes
+                    topics_list, processes=remote_processes
                 )
                 Logger.get_logger().log(
                     LoggerLevel.DEBUG, "Collect ROS Computation Graph information..."

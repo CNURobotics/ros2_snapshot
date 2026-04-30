@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # Copyright 2026 Christopher Newport University
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Lightweight per-host process snapshot agent."""
+"""Lightweight per-host process snapshot remote."""
 
 import argparse
 import ipaddress
@@ -26,9 +28,10 @@ import psutil
 import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger
+import yaml
 
 
-AGENT_NODE_NAME = "ros2_snapshot_agent"
+REMOTE_NODE_NAME = "ros2_snapshot_remote"
 PROCESS_SNAPSHOT_SERVICE = "get_process_snapshot"
 DEFAULT_CPU_SAMPLE_DELAY_SEC = 0.25
 ROS_TOKENS = [
@@ -130,10 +133,14 @@ ROS_NETWORK_ENVIRONMENT_KEYS = (
     "FASTRTPS_DEFAULT_PROFILES_FILE",
     "FASTDDS_DEFAULT_PROFILES_FILE",
 )
+MACHINE_ID_PATHS = (
+    "/etc/machine-id",
+    "/var/lib/dbus/machine-id",
+)
 
 
-def agent_service_name(namespace):
-    """Return the fully qualified snapshot-agent service name."""
+def remote_service_name(namespace):
+    """Return the fully qualified snapshot-remote service name."""
     normalized_namespace = namespace if namespace.startswith("/") else f"/{namespace}"
     return f"{normalized_namespace.rstrip('/')}/{PROCESS_SNAPSHOT_SERVICE}"
 
@@ -240,6 +247,19 @@ def list_ros_like_processes(prime_cpu=True):
         )
 
     return sorted(results, key=sort_key)
+
+
+def get_machine_id():
+    """Return a stable local machine identifier when the platform provides one."""
+    for path in MACHINE_ID_PATHS:
+        try:
+            with open(path, "r") as machine_id_file:
+                machine_id = machine_id_file.read().strip()
+        except OSError:
+            continue
+        if machine_id:
+            return machine_id, path
+    return None, None
 
 
 def normalize_hostname_for_namespace(hostname):
@@ -382,7 +402,7 @@ def _is_machine_address(address):
         return False
 
 
-def serialize_process(proc, machine):
+def serialize_process(proc, machine, machine_id=None, machine_id_source=None):
     """Convert psutil-backed process data into a JSON-safe dictionary."""
     return {
         "pid": proc.get("pid"),
@@ -397,6 +417,8 @@ def serialize_process(proc, machine):
         "assigned": None,
         "cpu_percent": proc.get("cpu_percent"),
         "machine": machine,
+        "machine_id": machine_id,
+        "machine_id_source": machine_id_source,
     }
 
 
@@ -416,7 +438,7 @@ def build_process_snapshot_payload(
     ip_addresses,
     cpu_sample_delay_sec=DEFAULT_CPU_SAMPLE_DELAY_SEC,
 ):
-    """Build the JSON-serializable process snapshot served by the agent."""
+    """Build the JSON-serializable process snapshot served by the remote."""
     should_sample_cpu = cpu_sample_delay_sec > 0
     raw_processes = list_ros_like_processes(prime_cpu=should_sample_cpu)
     if should_sample_cpu:
@@ -425,17 +447,59 @@ def build_process_snapshot_payload(
         for proc in raw_processes:
             refresh_process_cpu_percent(proc)
 
+    ros_network_environment = get_ros_network_environment()
+    machine_id, machine_id_source = get_machine_id()
+    ros_network_address_hints = extract_ip_address_hints(ros_network_environment)
     return {
         "hostname": hostname,
+        "machine_id": machine_id,
+        "machine_id_source": machine_id_source,
         "ip_addresses": ip_addresses,
-        "ros_network_environment": get_ros_network_environment(),
+        "ros_network_environment": ros_network_environment,
+        "ros_network_address_hints": ros_network_address_hints,
         "ros_domain_id": os.environ.get("ROS_DOMAIN_ID"),
         "rmw_implementation": os.environ.get("RMW_IMPLEMENTATION"),
-        "processes": [serialize_process(proc, hostname) for proc in raw_processes],
+        "processes": [
+            serialize_process(
+                proc,
+                hostname,
+                machine_id=machine_id,
+                machine_id_source=machine_id_source,
+            )
+            for proc in raw_processes
+        ],
     }
 
 
-class SnapshotAgent(Node):
+def _format_process_summary(processes, max_processes=12):
+    """Return compact process identifiers for INFO-level remote logs."""
+    process_summaries = []
+    for proc in processes[:max_processes]:
+        summary = f"{proc.get('pid')}:{proc.get('name')}"
+        if proc.get("reason"):
+            summary = f"{summary}({proc.get('reason')})"
+        process_summaries.append(summary)
+    if len(processes) > max_processes:
+        process_summaries.append(f"... +{len(processes) - max_processes} more")
+    return ", ".join(process_summaries) or "none"
+
+
+def format_process_snapshot_summary(payload):
+    """Return a concise human-readable summary of a remote process payload."""
+    return (
+        f"ros2_snapshot remote contacted; returned "
+        f"{len(payload['processes'])} processes from '{payload.get('hostname')}'\n"
+        f"  machine_id: {payload.get('machine_id') or 'unknown'}\n"
+        f"  addresses: {', '.join(payload.get('ip_addresses') or []) or 'none'}\n"
+        f"  ros_domain_id: {payload.get('ros_domain_id') or 'unset'}\n"
+        f"  rmw_implementation: {payload.get('rmw_implementation') or 'unset'}\n"
+        f"  address_hints: "
+        f"{', '.join(payload.get('ros_network_address_hints') or []) or 'none'}\n"
+        f"  processes: {_format_process_summary(payload.get('processes') or [])}"
+    )
+
+
+class SnapshotRemote(Node):
     """ROS node that serves local process metadata to snapshot runners."""
 
     def __init__(
@@ -444,19 +508,18 @@ class SnapshotAgent(Node):
         namespace,
         cpu_sample_delay_sec=DEFAULT_CPU_SAMPLE_DELAY_SEC,
     ):
-        super().__init__(AGENT_NODE_NAME, namespace=namespace)
+        super().__init__(REMOTE_NODE_NAME, namespace=namespace)
         self.hostname = hostname
         self.ip_addresses = get_ip_addresses(hostname)
         self.cpu_sample_delay_sec = cpu_sample_delay_sec
         self.service = self.create_service(
             Trigger, PROCESS_SNAPSHOT_SERVICE, self.get_process_snapshot
         )
-        print(
-            f"ros2_snapshot agent ready on host '{self.hostname}'\n"
+        self.get_logger().info(
+            f"ros2_snapshot remote ready on host '{self.hostname}'\n"
             f"  namespace: {namespace}\n"
-            f"  service:   {agent_service_name(namespace)}\n"
-            f"  addresses: {', '.join(self.ip_addresses) or 'none discovered'}",
-            flush=True,
+            f"  service:   {remote_service_name(namespace)}\n"
+            f"  addresses: {', '.join(self.ip_addresses) or 'none discovered'}"
         )
 
     def get_process_snapshot(self, _request, response):
@@ -468,18 +531,18 @@ class SnapshotAgent(Node):
         )
         response.success = True
         response.message = json.dumps(payload, sort_keys=True)
-        print(
-            f"ros2_snapshot agent contacted; returned "
-            f"{len(payload['processes'])} processes from '{self.hostname}'",
-            flush=True,
+        self.get_logger().info(format_process_snapshot_summary(payload))
+        self.get_logger().debug(
+            f"ros2_snapshot remote full process payload:\n"
+            f"{yaml.safe_dump(payload, sort_keys=True)}"
         )
         return response
 
 
 def get_options(argv):
-    """Parse command-line options for the snapshot agent."""
+    """Parse command-line options for the snapshot remote."""
     parser = argparse.ArgumentParser(
-        usage="ros2 run ros2_snapshot agent [options]",
+        usage="ros2 run ros2_snapshot remote [options]",
         description="Serve local process metadata for distributed ROS snapshots.",
     )
     parser.add_argument(
@@ -490,7 +553,7 @@ def get_options(argv):
     parser.add_argument(
         "--namespace",
         default=None,
-        help="agent namespace; defaults to a ROS-safe hostname namespace",
+        help="remote namespace; defaults to a ROS-safe hostname namespace",
     )
     parser.add_argument(
         "--cpu-sample-delay",
@@ -498,11 +561,13 @@ def get_options(argv):
         default=DEFAULT_CPU_SAMPLE_DELAY_SEC,
         help="seconds to wait between priming and sampling process CPU percent",
     )
-    return parser.parse_args(argv)
+    options, ros_args = parser.parse_known_args(argv)
+    options.ros_args = ros_args
+    return options
 
 
 def main(argv=None):
-    """Run the snapshot agent."""
+    """Run the snapshot remote."""
     options = get_options(argv)
     namespace = options.namespace
     if namespace is None:
@@ -510,16 +575,16 @@ def main(argv=None):
     elif not namespace.startswith("/"):
         namespace = "/" + namespace
 
-    rclpy.init(args=None)
-    snapshot_agent = SnapshotAgent(
+    rclpy.init(args=options.ros_args)
+    snapshot_remote = SnapshotRemote(
         options.hostname,
         namespace,
         cpu_sample_delay_sec=max(0.0, options.cpu_sample_delay),
     )
     try:
-        rclpy.spin(snapshot_agent)
+        rclpy.spin(snapshot_remote)
     finally:
-        snapshot_agent.destroy_node()
+        snapshot_remote.destroy_node()
         rclpy.shutdown()
 
 

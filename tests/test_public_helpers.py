@@ -68,7 +68,7 @@ def test_node_bank_builder_loads_fresh_processes_on_each_init(monkeypatch):
     assert calls == ["loaded", "loaded"]
 
 
-def test_node_bank_builder_merges_agent_processes_with_local_processes(monkeypatch):
+def test_node_bank_builder_merges_remote_processes_with_local_processes(monkeypatch):
     ip_lookup_calls = []
     monkeypatch.setattr(
         "ros2_snapshot.snapshot.builders.node_bank_builder.socket.gethostname",
@@ -84,6 +84,10 @@ def test_node_bank_builder_merges_agent_processes_with_local_processes(monkeypat
     monkeypatch.setattr(
         "ros2_snapshot.snapshot.builders.node_bank_builder.get_ros_network_environment",
         lambda: {"ROS_DISCOVERY_SERVER": "192.0.2.30:11811"},
+    )
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.get_machine_id",
+        lambda: ("local-machine-id", "/etc/machine-id"),
     )
     monkeypatch.setattr(
         "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
@@ -123,10 +127,92 @@ def test_node_bank_builder_merges_agent_processes_with_local_processes(monkeypat
     assert node_bank_builder.processes["local_host:10"][
         "machine_ros_network_environment"
     ] == {"ROS_DISCOVERY_SERVER": "192.0.2.30:11811"}
+    assert node_bank_builder.processes["local_host:10"][
+        "machine_ros_network_address_hints"
+    ] == ["192.0.2.30"]
+    assert node_bank_builder.processes["local_host:10"]["machine_id"] == (
+        "local-machine-id"
+    )
     assert ip_lookup_calls == [("local_host", ["192.0.2.30"])]
 
 
-def test_node_bank_builder_marks_unmatched_nodes_unknown_when_agents_seen(monkeypatch):
+def test_node_bank_builder_merges_duplicate_machine_id_pid_processes(monkeypatch):
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
+        lambda: [],
+    )
+
+    from ros2_snapshot.snapshot.builders.node_bank_builder import NodeBankBuilder
+    node_bank_builder = NodeBankBuilder(
+        [
+            {
+                "pid": 10,
+                "ppid": 1,
+                "name": "talker",
+                "cmdline": ["talker"],
+                "assigned": None,
+                "machine": "robot",
+                "machine_id": "same-machine",
+            },
+            {
+                "pid": 10,
+                "ppid": 1,
+                "name": "talker",
+                "cmdline": ["talker"],
+                "assigned": None,
+                "machine": "robot_local",
+                "machine_id": "same-machine",
+                "machine_ip_addresses": ["192.0.2.10"],
+            },
+        ]
+    )
+
+    assert set(node_bank_builder.processes) == {"robot:10"}
+    assert node_bank_builder.processes["robot:10"]["machine_ip_addresses"] == [
+        "192.0.2.10"
+    ]
+
+
+def test_node_bank_builder_keeps_ambiguous_duplicate_process_keys(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
+        lambda: [],
+    )
+
+    from ros2_snapshot.snapshot.builders.node_bank_builder import NodeBankBuilder
+    from ros2_snapshot.snapshot.builders.node_bank_builder import LoggerLevel
+
+    with caplog.at_level(LoggerLevel.WARNING):
+        node_bank_builder = NodeBankBuilder(
+            [
+                {
+                    "pid": 10,
+                    "ppid": 1,
+                    "name": "first",
+                    "cmdline": ["first"],
+                    "assigned": None,
+                    "machine": "robot",
+                    "process_key": "ambiguous:10",
+                },
+                {
+                    "pid": 10,
+                    "ppid": 1,
+                    "name": "second",
+                    "cmdline": ["second"],
+                    "assigned": None,
+                    "machine": "other_robot",
+                    "process_key": "ambiguous:10",
+                },
+            ]
+        )
+
+    assert set(node_bank_builder.processes) == {"ambiguous:10", "ambiguous:10#2"}
+    assert node_bank_builder.processes["ambiguous:10"]["name"] == "first"
+    assert node_bank_builder.processes["ambiguous:10#2"]["name"] == "second"
+    assert "Duplicate process key 'ambiguous:10' detected" in caplog.text
+
+
+def test_node_bank_builder_marks_unmatched_nodes_unknown_when_remotes_seen(monkeypatch):
     monkeypatch.setattr(
         "ros2_snapshot.snapshot.builders.node_bank_builder.list_ros_like_processes",
         lambda: [],

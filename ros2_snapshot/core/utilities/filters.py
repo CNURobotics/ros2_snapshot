@@ -80,7 +80,7 @@ class NodeFilter(Filter):
 
     def should_filter_out(self, item):
         """Return True for nodes that should not be modeled."""
-        return super().should_filter_out(item) or item.endswith("/ros2_snapshot_agent")
+        return super().should_filter_out(item) or item.endswith("/ros2_snapshot_remote")
 
 
 class TopicFilter(Filter):

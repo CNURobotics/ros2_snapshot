@@ -42,7 +42,7 @@ class ROSModelBuilder:
         :param topic_types: the collection or iterable of topic name,
             topic type pairs
         :type topic_types: list[tuple(str, str)]
-        :param processes: optional process metadata collected from snapshot agents
+        :param processes: optional process metadata collected from snapshot remotes
         """
         self._bank_builders = {
             BankType.NODE: NodeBankBuilder(processes),

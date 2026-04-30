@@ -108,10 +108,10 @@ def test_save_dot_graph_files_skips_when_graphviz_python_package_missing(
     assert node_bank.graph_calls == 0
 
 
-def test_node_filter_drops_namespaced_snapshot_agents():
+def test_node_filter_drops_namespaced_snapshot_remotes():
     node_filter = filters.NodeFilter(True, True)
 
-    assert node_filter.should_filter_out("/robot_a/ros2_snapshot_agent") is True
+    assert node_filter.should_filter_out("/robot_a/ros2_snapshot_remote") is True
 
 
 def test_classify_process_returns_ros_metadata_for_ros_like_process():

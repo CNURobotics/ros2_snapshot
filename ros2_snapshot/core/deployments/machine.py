@@ -23,6 +23,8 @@ class Machine(_EntityMetamodel):
     yaml_tag: ClassVar[str] = "!Machine"
 
     hostname: Optional[str] = None
+    machine_id: Optional[str] = None
+    machine_id_source: Optional[str] = None
     ip_address: Optional[str] = None
     node_names: Optional[Union[Set[str], List[str]]] = None
 

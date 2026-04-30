@@ -443,11 +443,15 @@ def test_machine_builder_prefers_process_machine_ip_metadata():
     machine_builder.prepare(
         node_name="/talker",
         hostname="robot_a",
+        machine_id="machine-id-a",
+        machine_id_source="/etc/machine-id",
         ip_addresses=["192.0.2.20"],
     )
     machine = machine_builder.extract_metamodel()
 
     assert machine.hostname == "robot_a"
+    assert machine.machine_id == "machine-id-a"
+    assert machine.machine_id_source == "/etc/machine-id"
     assert machine.ip_address == "192.0.2.20"
 
 
@@ -460,6 +464,8 @@ def test_machine_bank_builder_prefers_addresses_on_shared_machine_subnet():
                 machine="local_host",
                 process_info={
                     "machine": "local_host",
+                    "machine_id": "local-machine-id",
+                    "machine_id_source": "/etc/machine-id",
                     "machine_ip_addresses": ["10.124.41.218", "10.126.17.136"],
                 },
             ),
@@ -478,6 +484,8 @@ def test_machine_bank_builder_prefers_addresses_on_shared_machine_subnet():
 
     local_machine = machine_bank_builder["local_host"].extract_metamodel()
     remote_machine = machine_bank_builder["remote_host"].extract_metamodel()
+    assert local_machine.machine_id == "local-machine-id"
+    assert local_machine.machine_id_source == "/etc/machine-id"
     assert local_machine.ip_address == "10.126.17.136"
     assert remote_machine.ip_address == "10.126.17.10"
 
@@ -495,6 +503,7 @@ def test_machine_bank_builder_prefers_ros_network_environment_ip_hints():
                     "machine_ros_network_environment": {
                         "ROS_DISCOVERY_SERVER": "10.126.17.131:11811"
                     },
+                    "machine_ros_network_address_hints": ["10.126.17.131"],
                 },
             ),
             "/remote_node": SimpleNamespace(
@@ -506,6 +515,7 @@ def test_machine_bank_builder_prefers_ros_network_environment_ip_hints():
                     "machine_ros_network_environment": {
                         "CYCLONEDDS_URI": '<Peer Address="10.124.43.91"/>'
                     },
+                    "machine_ros_network_address_hints": ["10.124.43.91"],
                 },
             ),
         }
@@ -532,6 +542,7 @@ def test_machine_bank_builder_prefers_ros_network_hint_subnet_for_single_machine
                     "machine_ros_network_environment": {
                         "ROS_DISCOVERY_SERVER": "10.126.17.131:11811"
                     },
+                    "machine_ros_network_address_hints": ["10.126.17.131"],
                 },
             ),
         }
@@ -541,6 +552,31 @@ def test_machine_bank_builder_prefers_ros_network_hint_subnet_for_single_machine
 
     local_machine = machine_bank_builder["local_host"].extract_metamodel()
     assert local_machine.ip_address == "10.126.17.136"
+
+
+def test_machine_bank_builder_ignores_unresolved_ros_network_environment_file_hints():
+    machine_bank_builder = MachineBankBuilder()
+    node_builders = SimpleNamespace(
+        names_to_entity_builders={
+            "/remote_node": SimpleNamespace(
+                name="/remote_node",
+                machine="remote_host",
+                process_info={
+                    "machine": "remote_host",
+                    "machine_ip_addresses": ["10.124.43.91", "10.126.17.10"],
+                    "machine_ros_network_environment": {
+                        "CYCLONEDDS_URI": "/remote-only/cyclonedds.xml"
+                    },
+                    "machine_ros_network_address_hints": ["10.126.17.131"],
+                },
+            ),
+        }
+    )
+
+    machine_bank_builder.prepare(node_builders=node_builders)
+
+    remote_machine = machine_bank_builder["remote_host"].extract_metamodel()
+    assert remote_machine.ip_address == "10.126.17.10"
 
 
 def test_node_builder_extracts_component_manager_and_component_models(monkeypatch):

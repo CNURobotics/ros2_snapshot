@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # Copyright 2026 Christopher Newport University
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -621,7 +623,9 @@ class PackageModeler(object):
         except NotADirectoryError:
             pass  # expected error
         except Exception as exc:  # noqa: B902
-            Logger.get_logger().log(LoggerLevel.ERROR, f"Error collecting package specs!\n    {exc}")
+            Logger.get_logger().log(
+                LoggerLevel.ERROR, f"Error collecting package specs!\n    {exc}"
+            )
             raise exc
         finally:
             _active_paths.remove(visit_key)
@@ -673,11 +677,13 @@ class PackageModeler(object):
                                 )
                         except IOError as ex:
                             Logger.get_logger().log(
-                                LoggerLevel.ERROR, f"IOError reading spec: {type(ex)} {ex}\n    {child_path}"
+                                LoggerLevel.ERROR,
+                                f"IOError reading spec: {type(ex)} {ex}\n    {child_path}",
                             )
                         except Exception as ex:  # noqa: B902
                             Logger.get_logger().log(
-                                LoggerLevel.ERROR, f"Unknown error reading spec: {type(ex)} {ex}\n    {child_path}"
+                                LoggerLevel.ERROR,
+                                f"Unknown error reading spec: {type(ex)} {ex}\n    {child_path}",
                             )
                             raise ex
 

@@ -158,7 +158,9 @@ class _EntityMetamodel(BaseModel):
                     elif isinstance(val, str):
                         fields = getattr(self, "__fields__", {})
                         field = fields.get(key)
-                        use_set = field is not None and _type_includes_set(field.outer_type_)
+                        use_set = field is not None and _type_includes_set(
+                            field.outer_type_
+                        )
                         if use_set:
                             new_coll = {val}
                             if isinstance(kwargs[key], (set, list)):

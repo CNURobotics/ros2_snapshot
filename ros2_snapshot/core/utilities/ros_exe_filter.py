@@ -138,6 +138,11 @@ ROS_NETWORK_ENVIRONMENT_KEYS = (
     "FASTDDS_DEFAULT_PROFILES_FILE",
 )
 
+MACHINE_ID_PATHS = (
+    "/etc/machine-id",
+    "/var/lib/dbus/machine-id",
+)
+
 
 def _safe_cmdline(p):
     try:
@@ -267,6 +272,19 @@ def list_ros_like_processes():
         )
 
     return sorted(results, key=key)
+
+
+def get_machine_id():
+    """Return a stable local machine identifier when the platform provides one."""
+    for path in MACHINE_ID_PATHS:
+        try:
+            with open(path, "r") as machine_id_file:
+                machine_id = machine_id_file.read().strip()
+        except OSError:
+            continue
+        if machine_id:
+            return machine_id, path
+    return None, None
 
 
 def _normalize_ip_address(address):

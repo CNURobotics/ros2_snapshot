@@ -327,7 +327,10 @@ def test_collect_component_info_skips_failed_component_introspection(monkeypatch
     monkeypatch.setattr(
         snapshot_module,
         "get_components_in_container",
-        lambda node, remote_container_node_name: (False, "No 'list_nodes' service found"),
+        lambda node, remote_container_node_name: (
+            False,
+            "No 'list_nodes' service found",
+        ),
     )
 
     snapshot._collect_component_info(node=object())

@@ -136,6 +136,5 @@ def test_model_class_lookup_caches_refresh_for_late_subclasses():
 def test_model_class_lookup_includes_indirect_subclasses():
     assert _EntityMetamodel.get_model_class("!Component") is metamodels.Component
     assert (
-        _EntityMetamodel.get_model_class_from_type("Component")
-        is metamodels.Component
+        _EntityMetamodel.get_model_class_from_type("Component") is metamodels.Component
     )

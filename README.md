@@ -125,21 +125,24 @@ Inspect the resulting deployment model files under `~/.snapshot_modeling`.
 
 ## Multi-Machine Process Snapshots
 
-For distributed systems, start a lightweight snapshot agent on each machine
-before running the deployment snapshot:
+For distributed systems, start a lightweight snapshot remote on each machine
+other than the central machine that will run `ros2_snapshot running`:
 
 ```bash
-ros2 run ros2_snapshot agent
+ros2 run ros2_snapshot remote
 ```
 
-By default, the agent namespaces itself using the machine hostname and serves a
+By default, the remote namespaces itself using the machine hostname and serves a
 `get_process_snapshot` service. The `running` tool automatically discovers all
-visible snapshot-agent services and uses their local process data to associate
-ROS nodes with the machines that host them. If no agents are discovered,
-`running` falls back to the original local-process behavior.
+visible snapshot-remote services and uses their local process data to associate
+ROS nodes with the machines that host them. The central snapshot machine is
+always inspected locally. If a remote is also running on the central machine,
+duplicate local/remote process records are merged using the machine ID when the
+operating system provides one. If no remotes are discovered, `running` falls
+back to the original local-process behavior.
 
-The agent implementation lives in
-`ros2_snapshot/snapshot/snapshot_agent.py` and is intentionally self-contained
+The remote implementation lives in
+`ros2_snapshot/snapshot/snapshot_remote.py` and is intentionally self-contained
 enough to copy to a remote host that has ROS 2 Python support, `std_srvs`, and
 `psutil` available.
 

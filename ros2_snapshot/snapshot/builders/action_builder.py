@@ -204,7 +204,9 @@ class ActionBuilder(_EntityBuilder):
             Action Client ROS Node names to appearance counts
         :type action_node_to_counts: dict{str: int}
         """
-        Logger.get_logger().log(LoggerLevel.DEBUG, "\x1b[92mcount_action_node_appearances\x1b[0m")
+        Logger.get_logger().log(
+            LoggerLevel.DEBUG, "\x1b[92mcount_action_node_appearances\x1b[0m"
+        )
         Logger.get_logger().log(
             LoggerLevel.DEBUG,
             f"\n\t self_topic_name_suffixes_to_builders: {self.topic_name_suffixes_to_builders}\n"

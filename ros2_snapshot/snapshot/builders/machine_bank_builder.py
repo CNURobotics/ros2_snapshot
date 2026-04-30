@@ -17,8 +17,6 @@
 import ipaddress
 
 from ros2_snapshot.core.metamodels import MachineBank
-from ros2_snapshot.core.utilities.ros_exe_filter import extract_ip_address_hints
-
 from ros2_snapshot.snapshot.builders.base_builders import _BankBuilder
 from ros2_snapshot.snapshot.builders.machine_builder import MachineBuilder
 
@@ -98,12 +96,10 @@ class MachineBankBuilder(_BankBuilder):
 
     @staticmethod
     def _prefer_environment_hint_addresses(ip_addresses, process_dict):
-        """Order addresses so explicit ROS/DDS environment hints come first."""
+        """Order addresses so locally resolved ROS/DDS address hints come first."""
         if not ip_addresses:
             return ip_addresses
-        hinted_addresses = extract_ip_address_hints(
-            process_dict.get("machine_ros_network_environment")
-        )
+        hinted_addresses = process_dict.get("machine_ros_network_address_hints") or []
         if not hinted_addresses:
             return ip_addresses
         hinted_subnets = {
@@ -146,6 +142,9 @@ class MachineBankBuilder(_BankBuilder):
             )
             machine_builder.prepare(
                 node_name=node_builder.name,
-                hostname=process_dict.get("machine"),
+                hostname=process_dict.get("machine_hostname")
+                or process_dict.get("machine"),
+                machine_id=process_dict.get("machine_id"),
+                machine_id_source=process_dict.get("machine_id_source"),
                 ip_addresses=ip_addresses,
             )
